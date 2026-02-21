@@ -35,6 +35,7 @@ Cross-platform: Works on macOS, Linux, and Windows (portable file locking).
 Usage:
   python3 token-guard.py           # Normal hook mode (reads JSON from stdin)
   python3 token-guard.py --report  # Print cross-session analytics
+  python3 token-guard.py --usage   # Print shareable usage summary
 """
 
 import difflib
@@ -43,6 +44,7 @@ import os
 import re
 import sys
 import time
+from typing import Any, Dict, List, Tuple
 
 # Shared infrastructure — locking, state, audit, config
 from hook_utils import (
@@ -97,8 +99,127 @@ DIRECT_TOOL_PATTERNS = [
      "run_execute"),
 ]
 
+# Canonical "direct tool" task descriptions for fuzzy matching.
+# Catches paraphrases that regex misses (e.g., "find where X is called" vs "search for X").
+# Uses difflib.SequenceMatcher — zero dependencies, same technique as type-switching detection.
+# Format: (canonical_description, pattern_name, suggestion)
+CANONICAL_DIRECT_TASKS = [
+    # search/grep tasks
+    ("search for function in the codebase", "search_grep",
+     "Use Grep to search for code patterns directly."),
+    ("find where this function is called", "search_grep",
+     "Use Grep to search for code patterns directly."),
+    ("locate the definition of this class", "search_grep",
+     "Use Grep to search for code patterns directly."),
+    ("grep for all usages of this import", "search_grep",
+     "Use Grep to search for code patterns directly."),
+    ("find all references to this variable", "search_grep",
+     "Use Grep to search for code patterns directly."),
+    # read/inspect tasks
+    ("read the config file and understand it", "read_file",
+     "Use Read tool to read files directly."),
+    ("look at the contents of this module", "read_file",
+     "Use Read tool to read files directly."),
+    ("open the file and check what it does", "read_file",
+     "Use Read tool to read files directly."),
+    ("examine this source code file", "read_file",
+     "Use Read tool to read files directly."),
+    ("read through the settings and configuration", "read_file",
+     "Use Read tool to read files directly."),
+    # check/verify tasks
+    ("check if this file exists and verify contents", "check_verify",
+     "Use Grep or Bash to check directly."),
+    ("verify the version number in package json", "check_verify",
+     "Use Grep or Bash to check directly."),
+    ("confirm that the dependency is installed", "check_verify",
+     "Use Grep or Bash to check directly."),
+    ("check the status of the git repository", "check_verify",
+     "Use Grep or Bash to check directly."),
+    ("see if this environment variable is set", "check_verify",
+     "Use Grep or Bash to check directly."),
+    # edit/fix tasks
+    ("fix the typo in this line of code", "edit_fix",
+     "Use Read + Edit to fix directly."),
+    ("change this value in the config file", "edit_fix",
+     "Use Read + Edit to fix directly."),
+    ("update the version number in the file", "edit_fix",
+     "Use Read + Edit to fix directly."),
+    ("modify this single function to fix the bug", "edit_fix",
+     "Use Read + Edit to fix directly."),
+    ("edit the import statement at the top", "edit_fix",
+     "Use Read + Edit to fix directly."),
+    # analyze/inspect tasks
+    ("analyze this file and tell me what it does", "analyze_inspect",
+     "Use Read to analyze the file directly."),
+    ("look at this function and explain it", "analyze_inspect",
+     "Use Read to analyze the file directly."),
+    ("inspect the error handling in this module", "analyze_inspect",
+     "Use Read to analyze the file directly."),
+    ("examine how this class is structured", "analyze_inspect",
+     "Use Read to analyze the file directly."),
+    ("review this code and explain the logic", "analyze_inspect",
+     "Use Read to analyze the file directly."),
+    # what-does tasks
+    ("what does this function do exactly", "what_does",
+     "Use Read to understand the code directly."),
+    ("explain what this module is responsible for", "what_does",
+     "Use Read to understand the code directly."),
+    ("understand what this class handles", "what_does",
+     "Use Read to understand the code directly."),
+    ("figure out what this method returns", "what_does",
+     "Use Read to understand the code directly."),
+    ("tell me what this file is used for", "what_does",
+     "Use Read to understand the code directly."),
+    # list/show tasks
+    ("list all the files in this directory", "list_show",
+     "Use Grep or Glob to list matches directly."),
+    ("show me all the imports in this file", "list_show",
+     "Use Grep or Glob to list matches directly."),
+    ("display all test files in the project", "list_show",
+     "Use Grep or Glob to list matches directly."),
+    ("find all python files in this folder", "list_show",
+     "Use Grep or Glob to list matches directly."),
+    ("list the dependencies in requirements", "list_show",
+     "Use Grep or Glob to list matches directly."),
+    # count tasks
+    ("count how many test functions we have", "count_how_many",
+     "Use Grep with count mode to count directly."),
+    ("how many files are in this directory", "count_how_many",
+     "Use Grep with count mode to count directly."),
+    ("count the number of classes in the project", "count_how_many",
+     "Use Grep with count mode to count directly."),
+    ("how many lines of code in this file", "count_how_many",
+     "Use Grep with count mode to count directly."),
+    ("count all the todo comments in the codebase", "count_how_many",
+     "Use Grep with count mode to count directly."),
+    # compare/diff tasks
+    ("compare these two files and show differences", "compare_diff",
+     "Use Read on both files or Bash diff directly."),
+    ("diff the current version against the previous", "compare_diff",
+     "Use Read on both files or Bash diff directly."),
+    ("check what changed between these two files", "compare_diff",
+     "Use Read on both files or Bash diff directly."),
+    ("compare the old and new configuration files", "compare_diff",
+     "Use Read on both files or Bash diff directly."),
+    ("see the differences in these two modules", "compare_diff",
+     "Use Read on both files or Bash diff directly."),
+    # run/execute tasks
+    ("run the test suite and check results", "run_execute",
+     "Use Bash to run directly."),
+    ("execute this python script and see output", "run_execute",
+     "Use Bash to run directly."),
+    ("run the linter on this file", "run_execute",
+     "Use Bash to run directly."),
+    ("execute the build command for the project", "run_execute",
+     "Use Bash to run directly."),
+    ("run this shell command and report the output", "run_execute",
+     "Use Bash to run directly."),
+]
 
-def _safe_int(val, default):
+FUZZY_THRESHOLD = 0.55  # Word-level matching — lower than char-level because words are coarser
+
+
+def _safe_int(val: Any, default: int) -> int:
     """Safely coerce a value to int, returning default on failure."""
     if val is None:
         return default
@@ -108,7 +229,7 @@ def _safe_int(val, default):
         return default
 
 
-def load_config():
+def load_config() -> Dict:
     """Load config from JSON file, falling back to defaults on any error."""
     config = DEFAULT_CONFIG.copy()
     try:
@@ -130,7 +251,7 @@ def load_config():
     return config
 
 
-def cleanup_stale_state(ttl_hours):
+def cleanup_stale_state(ttl_hours: int) -> None:
     """Remove session state files older than ttl_hours. Self-cleaning on every run."""
     cutoff = time.time() - (ttl_hours * 3600)
     try:
@@ -149,7 +270,7 @@ def cleanup_stale_state(ttl_hours):
     # not here on the hot path. See self-heal.py phase_state_health().
 
 
-def audit(event_type, subagent_type, description, session_id, reason="", matched_pattern=""):
+def audit(event_type: str, subagent_type: str, description: str, session_id: str, reason: str = "", matched_pattern: str = "") -> None:
     """Append a single JSON line to the audit log with file locking. Non-critical."""
     entry = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -165,20 +286,42 @@ def audit(event_type, subagent_type, description, session_id, reason="", matched
     locked_append(AUDIT_LOG, json.dumps(entry) + "\n")
 
 
-def check_necessity(description, prompt_text):
+def check_necessity(description: str, prompt_text: str) -> Tuple[bool, str, str]:
     """Score whether this task could be handled by direct tools.
 
+    Two-pass detection:
+      1. Fast path: regex patterns (existing, <1ms)
+      2. Slow path: fuzzy matching against canonical bank (~50 comparisons, <5ms)
+
     Returns (should_block, suggestion, pattern_name).
-    pattern_name is logged to audit for tuning the regex over time.
+    pattern_name is logged to audit for tuning. Fuzzy matches get a "fuzzy_" prefix.
     """
     combined = f"{description} {prompt_text}".lower()
+
+    # Fast path: regex (high confidence, <1ms)
     for pattern, suggestion, pattern_name in DIRECT_TOOL_PATTERNS:
         if re.search(pattern, combined):
             return True, suggestion, pattern_name
+
+    # Slow path: word-level fuzzy matching against canonical bank
+    # Word-level comparison is more robust than character-level because specific
+    # identifiers (handleAuth, myFile.py) don't dilute the structural similarity.
+    input_words = combined[:200].split()
+    best_score = 0
+    best_match = None
+    for canonical, pattern_name, suggestion in CANONICAL_DIRECT_TASKS:
+        score = difflib.SequenceMatcher(None, input_words, canonical.split()).ratio()
+        if score > best_score:
+            best_score = score
+            best_match = (suggestion, pattern_name)
+
+    if best_score >= FUZZY_THRESHOLD and best_match:
+        return True, best_match[0], f"fuzzy_{best_match[1]}"
+
     return False, "", ""
 
 
-def check_type_switching(state, description, subagent_type):
+def check_type_switching(state: Dict, description: str, subagent_type: str) -> Tuple[bool, str]:
     """Detect if new spawn resembles a previously blocked spawn with different type."""
     for attempt in state.get("blocked_attempts", []):
         similarity = difflib.SequenceMatcher(
@@ -189,7 +332,7 @@ def check_type_switching(state, description, subagent_type):
     return False, ""
 
 
-def default_state():
+def default_state() -> Dict:
     """Return the default empty state for a new session."""
     return {"agent_count": 0, "agents": [], "blocked_attempts": []}
 
@@ -279,7 +422,7 @@ def main():
                     audit("allow_team", subagent_type, description, session_id)
                 sys.exit(0)
 
-            # RULE 1: One-per-session types (Explore, Plan, deep-researcher, etc.)
+            # RULE 1: One-per-session types (Explore, Plan, master-coder, etc.)
             if subagent_type in one_per_session:
                 existing = [a for a in state["agents"] if a["type"] == subagent_type]
                 if existing:
@@ -444,13 +587,13 @@ def main():
     sys.exit(0)  # Allow
 
 
-def block(reason):
+def block(reason: str) -> None:
     """Block the tool call with feedback to Claude."""
     print(reason, file=sys.stderr)
     sys.exit(2)
 
 
-def extract_target_dirs(prompt):
+def extract_target_dirs(prompt: str) -> List[str]:
     """Extract directory paths from an Explore agent's prompt.
 
     Uses general path patterns rather than hardcoded directory names,
@@ -474,7 +617,7 @@ def extract_target_dirs(prompt):
     return dirs
 
 
-def report():
+def report() -> None:
     """Print cross-session analytics from audit log."""
     from collections import Counter
 
@@ -511,14 +654,19 @@ def report():
         for p, c in Counter(e.get("pattern", "?") for e in necessity_blocks).most_common(10):
             print(f"  {p}: {c}")
 
-    # Estimated token cost (heuristic: ~50k per allow, ~0 per block)
-    TOKEN_COST_PER_AGENT = 50000
+    # Estimated token cost (heuristic: ~50k per agent, split ~70/30 input/output)
+    EST_INPUT_PER_AGENT = 35000   # ~70% is input (system prompt + mode file + context)
+    EST_OUTPUT_PER_AGENT = 15000  # ~30% is output (agent's response + tool calls)
     SONNET_COST_PER_1K_INPUT = 0.003  # $3/M input tokens
     SONNET_COST_PER_1K_OUTPUT = 0.015  # $15/M output tokens
-    est_tokens = len(allows) * TOKEN_COST_PER_AGENT
-    est_cost = est_tokens * (SONNET_COST_PER_1K_INPUT + SONNET_COST_PER_1K_OUTPUT) / 1000
-    savings_tokens = len(blocks) * TOKEN_COST_PER_AGENT
-    savings_cost = savings_tokens * (SONNET_COST_PER_1K_INPUT + SONNET_COST_PER_1K_OUTPUT) / 1000
+    est_input_cost = len(allows) * EST_INPUT_PER_AGENT * SONNET_COST_PER_1K_INPUT / 1000
+    est_output_cost = len(allows) * EST_OUTPUT_PER_AGENT * SONNET_COST_PER_1K_OUTPUT / 1000
+    est_cost = est_input_cost + est_output_cost
+    est_tokens = len(allows) * (EST_INPUT_PER_AGENT + EST_OUTPUT_PER_AGENT)
+    savings_input = len(blocks) * EST_INPUT_PER_AGENT * SONNET_COST_PER_1K_INPUT / 1000
+    savings_output = len(blocks) * EST_OUTPUT_PER_AGENT * SONNET_COST_PER_1K_OUTPUT / 1000
+    savings_cost = savings_input + savings_output
+    savings_tokens = len(blocks) * (EST_INPUT_PER_AGENT + EST_OUTPUT_PER_AGENT)
 
     print(f"\nEstimated impact:")
     print(f"  Tokens used by agents: ~{est_tokens:,}")
@@ -526,6 +674,23 @@ def report():
     print(f"  Est. cost (agents): ~${est_cost:.2f}")
     print(f"  Est. savings (blocks): ~${savings_cost:.2f}")
     print(f"  Block rate: {len(blocks)/max(total,1)*100:.0f}%")
+
+    # Real metrics from transcript parsing (agent-metrics.py)
+    metrics_file = os.path.join(STATE_DIR, "agent-metrics.jsonl")
+    if os.path.isfile(metrics_file):
+        real_metrics = read_jsonl_fault_tolerant(metrics_file)
+        completed = [m for m in real_metrics if m.get("event") == "agent_completed"]
+        if completed:
+            real_input = sum(m.get("input_tokens", 0) for m in completed)
+            real_output = sum(m.get("output_tokens", 0) for m in completed)
+            real_cache = sum(m.get("cache_read_tokens", 0) for m in completed)
+            real_cost = sum(m.get("cost_usd", 0) for m in completed)
+            print(f"\nReal metrics (from transcript parsing):")
+            print(f"  Agents metered: {len(completed)}")
+            print(f"  Input tokens: {real_input:,}")
+            print(f"  Output tokens: {real_output:,}")
+            print(f"  Cache reads: {real_cache:,} ({real_cache/max(real_input,1)*100:.0f}% cache hit)")
+            print(f"  Actual cost: ${real_cost:.4f}")
 
     # Warn/allow breakdown
     warns = [e for e in entries if e.get("event") == "warn"]
@@ -538,8 +703,57 @@ def report():
     print(f"{'='*40}\n")
 
 
+def usage() -> None:
+    """Print shareable usage summary from audit data."""
+    from collections import Counter
+
+    entries = read_jsonl_fault_tolerant(AUDIT_LOG)
+    if not entries:
+        print("No usage data yet. Token Guard will start tracking on your next session.")
+        return
+
+    allows = [e for e in entries if e.get("event") == "allow"]
+    blocks = [e for e in entries if e.get("event") == "block"]
+    total = len(allows) + len(blocks)
+    sessions = len(set(e.get("session", "?") for e in entries))
+
+    # Find earliest timestamp
+    timestamps = [e.get("ts", "") for e in entries if e.get("ts")]
+    active_since = min(timestamps)[:10] if timestamps else "unknown"
+
+    # Estimated savings
+    EST_TOKENS_PER_AGENT = 50000
+    COST_PER_AGENT = 0.33  # ~$0.33 per agent at Sonnet rates
+    saved_tokens = len(blocks) * EST_TOKENS_PER_AGENT
+    saved_cost = len(blocks) * COST_PER_AGENT
+
+    # Top block reasons
+    reason_counts = Counter(e.get("reason", "?") for e in blocks).most_common(3)
+
+    print(f"\n{'='*40}")
+    print(f"  YOUR TOKEN GUARD USAGE")
+    print(f"{'='*40}")
+    print(f"Active since: {active_since}")
+    print(f"Sessions tracked: {sessions}")
+    print(f"Total agent attempts: {total}")
+    print(f"Agents blocked: {len(blocks)} ({len(blocks)/max(total,1)*100:.0f}%)")
+    print(f"Estimated tokens saved: ~{saved_tokens:,}")
+    print(f"Estimated cost saved: ~${saved_cost:.2f}")
+    if reason_counts:
+        print(f"Top block reasons:")
+        for reason, count in reason_counts:
+            print(f"  {reason}: {count}")
+    print(f"{'='*40}")
+    print(f"\nShare this as a testimonial:")
+    print(f'"Token Guard saved me ~${saved_cost:.2f} across {sessions} sessions '
+          f'by blocking {len(blocks)} wasteful agent spawns."')
+    print()
+
+
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--report":
         report()
+    elif len(sys.argv) > 1 and sys.argv[1] == "--usage":
+        usage()
     else:
         main()

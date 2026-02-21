@@ -256,6 +256,35 @@ if [ -f ~/.claude/settings.json ]; then
 fi
 
 echo ""
+echo "Master Agents:"
+AGENT_PASS=0
+AGENT_FAIL=0
+for agent in master-coder master-researcher master-architect master-workflow; do
+  if [ -f ~/.claude/agents/${agent}.md ]; then
+    echo "  PASS  ${agent}.md"
+    AGENT_PASS=$((AGENT_PASS + 1))
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL  ${agent}.md — missing"
+    AGENT_FAIL=$((AGENT_FAIL + 1))
+    FAIL=$((FAIL + 1))
+  fi
+done
+if [ -f ~/.claude/master-agents/MANIFEST.md ]; then
+  echo "  PASS  MANIFEST.md"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL  MANIFEST.md — missing"
+  FAIL=$((FAIL + 1))
+fi
+MODE_COUNT=$(find ~/.claude/master-agents -name "*.md" -not -name "MANIFEST.md" -not -path "*/refs/*" 2>/dev/null | wc -l | tr -d ' ')
+echo "  INFO  $MODE_COUNT mode files found (expected 17)"
+if [ "$MODE_COUNT" -lt 17 ]; then
+  echo "  WARN  some mode files may be missing"
+  WARN=$((WARN + 1))
+fi
+
+echo ""
 echo "Session Files:"
 ACTIVE=$(ls ~/.claude/terminals/session-*.json 2>/dev/null | wc -l | tr -d ' ')
 echo "  INFO  $ACTIVE session file(s) on disk"

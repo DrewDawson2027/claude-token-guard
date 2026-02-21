@@ -3,3 +3,11 @@ __pycache__/
 session-state/
 *.pyc
 LAUNCH.md
+.hypothesis/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+dist/
+build/
+*.egg-info/

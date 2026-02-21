@@ -852,3 +852,64 @@ class TestExtractTargetDirsNonstandard:
         assert len(agents) == 1
         assert "target_dirs" in agents[0]
         assert "/opt/app/src" in agents[0]["target_dirs"]
+
+
+class TestFuzzyNecessity:
+    """Test fuzzy matching against canonical direct-tool task descriptions."""
+
+    def test_fuzzy_catches_paraphrases(self, isolated_env):
+        """Paraphrases missed by regex should be caught by fuzzy matching."""
+        env, _, _ = isolated_env
+        # "find where X is called" — regex misses this (no "search" or "grep" keyword)
+        code, _, stderr = run_guard(make_task_input(
+            "general-purpose",
+            description="find where handleAuth is called in the codebase",
+            session_id="fuzzy-paraphrase"
+        ), env=env)
+        assert code == 2
+        assert "direct tools" in stderr
+
+    def test_fuzzy_catches_explain_task(self, isolated_env):
+        """'explain what this module does' should be caught by fuzzy matching."""
+        env, _, _ = isolated_env
+        code, _, stderr = run_guard(make_task_input(
+            "general-purpose",
+            description="explain what this module is responsible for in the app",
+            session_id="fuzzy-explain"
+        ), env=env)
+        assert code == 2
+        assert "direct tools" in stderr
+
+    def test_fuzzy_allows_complex_tasks(self, isolated_env):
+        """Complex multi-file tasks should NOT be caught by fuzzy matching."""
+        env, _, _ = isolated_env
+        code, _, _ = run_guard(make_task_input(
+            "general-purpose",
+            description="refactor authentication across 12 microservice modules with new OAuth2 flow",
+            session_id="fuzzy-complex"
+        ), env=env)
+        assert code == 0
+
+    def test_fuzzy_allows_architectural_tasks(self, isolated_env):
+        """Architectural design tasks should NOT be caught."""
+        env, _, _ = isolated_env
+        code, _, _ = run_guard(make_task_input(
+            "general-purpose",
+            description="design a new database schema for the multi-tenant billing system",
+            session_id="fuzzy-arch"
+        ), env=env)
+        assert code == 0
+
+    def test_fuzzy_audit_prefix(self, isolated_env):
+        """Fuzzy-matched blocks should log pattern with 'fuzzy_' prefix in audit."""
+        env, state_dir, _ = isolated_env
+        run_guard(make_task_input(
+            "general-purpose",
+            description="find where handleAuth is called in the codebase",
+            session_id="fuzzy-audit-prefix"
+        ), env=env)
+        audit_file = state_dir / "audit.jsonl"
+        lines = audit_file.read_text().strip().split("\n")
+        last = json.loads(lines[-1])
+        assert last["event"] == "block"
+        assert last.get("pattern", "").startswith("fuzzy_")

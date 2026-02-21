@@ -1,0 +1,29 @@
+[run]
+source = .
+omit =
+    tests/*
+    claude_token_guard/*
+    agent-metrics.py
+    mcp-readiness.py
+    self-heal.py
+    setup.py
+    .github/*
+
+[report]
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:
+    if sys.platform == .win32.:
+    except ImportError:
+    pass
+
+# Exclude functions that are tested via subprocess integration tests
+# or are CLI-only entry points not suitable for unit testing
+exclude_also =
+    def main\(\):
+    def block\(
+    def report\(
+    def usage\(
+    def warn\(
+
+show_missing = true

@@ -12,7 +12,6 @@ Runs on every session start (~50ms for a healthy system). Five phases:
 Always exits 0 (never blocks session start). Logs to session-state/self-heal.jsonl.
 """
 
-import glob
 import json
 import os
 import subprocess
@@ -29,8 +28,8 @@ except (ImportError, SyntaxError):
     DEFAULT_CONFIG = {
         "max_agents": 5, "parallel_window_seconds": 30, "global_cooldown_seconds": 5,
         "max_per_subagent_type": 1, "state_ttl_hours": 24, "audit_log": True,
-        "one_per_session": ["Explore", "deep-researcher", "ssrn-researcher",
-                            "competitor-tracker", "gtm-strategist", "Plan"],
+        "one_per_session": ["Explore", "master-coder", "master-researcher",
+                            "master-architect", "master-workflow", "Plan"],
         "always_allowed": ["claude-code-guide", "statusline-setup", "haiku"],
     }
 

@@ -70,14 +70,43 @@ fi
 CACHE_DIR="$HOME/.claude/session-cache"
 mkdir -p "$CACHE_DIR"
 
-# Create cache files if they don't exist (agents read/write these)
-for f in coder-context.md research-cache.md design-decisions.md; do
-  if [ ! -f "$CACHE_DIR/$f" ]; then
-    echo "# Session Cache: $f" > "$CACHE_DIR/$f"
-    echo "# Auto-created $(date -u +%Y-%m-%dT%H:%M:%SZ). Agents write findings here for cross-agent reuse." >> "$CACHE_DIR/$f"
-    echo "" >> "$CACHE_DIR/$f"
-  fi
-done
+# Create cache files with schema headers if they don't exist
+if [ ! -f "$CACHE_DIR/coder-context.md" ]; then
+  cat > "$CACHE_DIR/coder-context.md" << 'SCHEMA'
+# Session Cache: coder-context.md
+# Agents write findings here for cross-agent reuse.
+
+## Files Read
+
+## Patterns Found
+
+## Architecture Notes
+SCHEMA
+fi
+if [ ! -f "$CACHE_DIR/research-cache.md" ]; then
+  cat > "$CACHE_DIR/research-cache.md" << 'SCHEMA'
+# Session Cache: research-cache.md
+# Agents write findings here for cross-agent reuse.
+
+## Queries Used
+
+## Sources Found
+
+## Key Findings
+SCHEMA
+fi
+if [ ! -f "$CACHE_DIR/design-decisions.md" ]; then
+  cat > "$CACHE_DIR/design-decisions.md" << 'SCHEMA'
+# Session Cache: design-decisions.md
+# Agents write findings here for cross-agent reuse.
+
+## ADRs
+
+## Tech Selections
+
+## Trade-offs
+SCHEMA
+fi
 
 # Clean stale cache entries (older than 24h)
 find "$CACHE_DIR" -name "*.md" -mmin +1440 -exec sh -c 'echo "# Session Cache: $(basename {})" > {}' \; 2>/dev/null

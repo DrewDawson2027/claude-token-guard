@@ -1,0 +1,82 @@
+name: Release to PyPI
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: pip install pytest hypothesis pytest-benchmark pytest-cov
+
+      - name: Run tests
+        run: python3 -m pytest tests/ -v --tb=short --benchmark-disable
+
+  test-publish:
+    needs: test
+    runs-on: ubuntu-latest
+    environment: test-pypi
+    permissions:
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: pip install build
+
+      - name: Build package
+        run: python -m build
+
+      - name: Publish to Test PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+      - name: Verify Test PyPI install
+        run: |
+          sleep 30  # Wait for Test PyPI to index the package
+          pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ claude-token-guard
+          claude-token-guard version
+
+  publish:
+    needs: test-publish
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: pip install build
+
+      - name: Build package
+        run: python -m build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

@@ -26,6 +26,7 @@ import json
 import os
 import sys
 import time
+from typing import Dict, List
 
 # Shared infrastructure — locking, state, atomic writes
 from hook_utils import lock, unlock, load_json_state, save_json_state
@@ -39,7 +40,7 @@ SEQUENTIAL_WINDOW = 120     # Seconds window for sequential detection (raised: 9
 READ_TTL = 300              # Prune read records older than 5 minutes
 
 
-def default_read_state():
+def default_read_state() -> Dict:
     """Return the default empty state for read tracking."""
     return {"reads": [], "last_sequential_warn": 0}
 
@@ -94,7 +95,7 @@ def main():
                 )
                 sys.exit(2)  # REAL block — read never happens
 
-            # CHECK 2: Sequential reads — warn at 4 total, BLOCK at 10 total
+            # CHECK 2: Sequential reads — warn at 4 total, BLOCK at 15 total
             recent = [r for r in state["reads"] if now - r["timestamp"] < SEQUENTIAL_WINDOW]
             recent_count = len(recent) + 1  # +1 for this attempt
 
@@ -146,12 +147,12 @@ def main():
     sys.exit(0)
 
 
-def warn(message):
+def warn(message: str) -> None:
     """Output warning via stderr (advisory, not blocking)."""
     print(message, file=sys.stderr)
 
 
-def get_explore_dirs(session_id):
+def get_explore_dirs(session_id: str) -> List[str]:
     """Read token-guard state to find directories mapped by Explore agents.
 
     Acquires the token-guard lock to prevent reading a partially-written state file

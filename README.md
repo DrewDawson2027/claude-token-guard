@@ -4,6 +4,11 @@
 
 <p align="center">
   <a href="https://github.com/DrewDawson2027/claude-token-guard/actions/workflows/ci.yml"><img src="https://github.com/DrewDawson2027/claude-token-guard/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://codecov.io/gh/DrewDawson2027/claude-token-guard"><img src="https://codecov.io/gh/DrewDawson2027/claude-token-guard/graph/badge.svg" alt="Coverage"></a>
+  <a href="#"><img src="https://img.shields.io/badge/tests-140%2B%20passed-brightgreen" alt="Tests"></a>
+  <a href="https://pypi.org/project/claude-token-guard/"><img src="https://img.shields.io/pypi/v/claude-token-guard" alt="PyPI"></a>
+  <a href="https://pepy.tech/project/claude-token-guard"><img src="https://pepy.tech/badge/claude-token-guard" alt="Downloads"></a>
+  <a href="https://github.com/DrewDawson2027/claude-token-guard/stargazers"><img src="https://img.shields.io/github/stars/DrewDawson2027/claude-token-guard" alt="Stars"></a>
   <a href="#quick-start"><img src="https://img.shields.io/badge/python-3.8%2B-blue" alt="Python"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License"></a>
   <a href="#quick-start"><img src="https://img.shields.io/badge/dependencies-zero-orange" alt="Zero Dependencies"></a>
@@ -117,6 +122,15 @@ Tool Call
 
 ## 🚀 Quick Start
 
+### Option A: pip install (recommended)
+
+```bash
+pip install claude-token-guard
+claude-token-guard install
+```
+
+### Option B: Manual
+
 ```bash
 # 1. Clone
 git clone https://github.com/DrewDawson2027/claude-token-guard.git
@@ -137,7 +151,34 @@ cd claude-token-guard && python3 -m pytest tests/ -v
 **That's it.** Zero dependencies. Pure Python standard library.
 
 > [!TIP]
-> Run `python3 -m pytest tests/ -v` to verify everything is working after setup. All 96 tests should pass.
+> Run `python3 -m pytest tests/ -v` to verify everything is working after setup. All 140+ tests should pass.
+
+## 📊 Your Savings
+
+```bash
+python3 ~/.claude/hooks/token-guard.py --usage
+# or: claude-token-guard report
+```
+
+```
+========================================
+  YOUR TOKEN GUARD USAGE
+========================================
+Active since: 2026-01-15
+Sessions tracked: 47
+Total agent attempts: 312
+Agents blocked: 89 (29%)
+Estimated tokens saved: ~4,450,000
+Estimated cost saved: ~$29.37
+Top block reasons:
+  necessity_check: 34
+  one_per_session: 28
+  type_switching: 15
+========================================
+
+Share this as a testimonial:
+"Token Guard saved me ~$29.37 across 47 sessions by blocking 89 wasteful agent spawns."
+```
 
 ## 🛡️ What It Catches
 
@@ -210,7 +251,7 @@ Add to your `~/.claude/settings.json`:
 
 ## 📋 The 7 Enforcement Rules
 
-1. **One-per-session types** — Explore, Plan, deep-researcher: max 1, ever
+1. **One-per-session types** — Explore, Plan, master-coder, master-researcher: max 1, ever
 2. **General type cap** — max N of any single subagent_type (default 1)
 3. **Session agent cap** — max total agents per session (default 5)
 4. **Parallel window** — no same-type spawns within 30 seconds
@@ -257,20 +298,23 @@ Unique sessions: 8
 
 ## 🧪 Test Suite
 
-**96 tests. Zero known bugs. Zero dependencies.**
+**140+ tests. Zero known bugs. Zero dependencies.**
 
 ```
-tests/test_token_guard.py           — 51 tests (all 7 rules, config edge cases, anti-evasion)
+tests/test_token_guard.py           — 56 tests (all 7 rules, fuzzy matching, config edge cases)
 tests/test_read_efficiency_guard.py — 27 tests (duplicate blocking, escalation, post-Explore)
 tests/test_integration.py           —  6 tests (cross-hook coordination, concurrent access)
 tests/test_self_heal.py             — 12 tests (all 5 repair phases, audit rotation)
+tests/test_properties.py            — 17 tests (hypothesis property-based invariant testing)
+tests/test_performance.py           —  8 tests (subprocess + function latency benchmarks)
+tests/test_direct_imports.py        — 15 tests (direct function calls for mutation testing)
 ```
 
 ```bash
 python3 -m pytest tests/ -v   # Run the full suite
 ```
 
-CI runs on every push: Python 3.8 / 3.10 / 3.12 × Ubuntu / macOS = **6 matrix jobs**.
+CI runs on every push: Python 3.8 / 3.10 / 3.12 × Ubuntu / macOS / Windows = **8 matrix jobs** with code coverage.
 
 ## 📈 Before / After
 
@@ -294,7 +338,7 @@ CI runs on every push: Python 3.8 / 3.10 / 3.12 × Ubuntu / macOS = **6 matrix j
 | Anti-evasion detection | **Yes** | No | No | No |
 | Self-healing | **Yes** | No | No | No |
 | Audit analytics | **Yes** | No | Yes | No |
-| Test suite | **96 tests** | N/A | None published | N/A |
+| Test suite | **140+ tests** | N/A | None published | N/A |
 | Setup time | 2 minutes | 0 | 5 minutes | Ongoing |
 
 ## 🔬 How It Works Under the Hood
