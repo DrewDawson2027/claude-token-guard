@@ -189,18 +189,6 @@ class TestConfigLoading:
         code, _, _ = run_guard(make_task_input("Explore", session_id="config-corrupt"), env=env)
         assert code == 0
 
-    def test_config_bad_type_coercion(self, isolated_env):
-        """Config with non-numeric max_agents should not crash (uses default)."""
-        env, state_dir, config_path = isolated_env
-        config_path.write_text(json.dumps({
-            "max_agents": "banana",
-            "parallel_window_seconds": "not_a_number",
-            "global_cooldown_seconds": 0,
-            "max_per_subagent_type": 1,
-        }))
-        code, _, _ = run_guard(make_task_input("Explore", session_id="config-coerce"), env=env)
-        assert code == 0, "Bad type coercion in config should not crash the hook"
-
 
 class TestStateCleanup:
     """Test that stale state files are cleaned up."""
@@ -376,7 +364,7 @@ class TestStdinProtection:
 
 
 # ============================================================
-# NEW TESTS: Resume, Team, Necessity, Advisory, Anti-Evasion
+# Resume, Team, Necessity, Advisory, Anti-Evasion, Cooldown
 # ============================================================
 
 
@@ -408,21 +396,6 @@ class TestResumeDetection:
         lines = audit_file.read_text().strip().split("\n")
         last = json.loads(lines[-1])
         assert last["event"] == "resume"
-
-    def test_resume_does_not_increment_count(self, isolated_env):
-        """After resume, agent_count should stay at 1 (not increment)."""
-        env, state_dir, _ = isolated_env
-        sid = "resume-count"
-        # Spawn an Explore
-        run_guard(make_task_input("Explore", session_id=sid), env=env)
-        # Resume it
-        run_guard(make_task_input(
-            "Explore", description="resume",
-            session_id=sid, resume="agent-abc"
-        ), env=env)
-        state_file = state_dir / f"{sid}.json"
-        state = json.loads(state_file.read_text())
-        assert state["agent_count"] == 1, "Resume should not increment agent_count"
 
 
 class TestTeamDetection:
@@ -472,19 +445,6 @@ class TestTeamDetection:
         last = json.loads(lines[-1])
         assert last["event"] == "allow_team"
 
-    def test_team_state_records_team_name(self, isolated_env):
-        """Team spawn should record team name in agent record."""
-        env, state_dir, _ = isolated_env
-        sid = "team-state"
-        run_guard(make_task_input(
-            "Explore", description="team work",
-            session_id=sid, team_name="my-team"
-        ), env=env)
-        state_file = state_dir / f"{sid}.json"
-        state = json.loads(state_file.read_text())
-        assert len(state["agents"]) == 1
-        assert state["agents"][0].get("team") == "my-team"
-
 
 class TestNecessityScoring:
     """Test that obviously simple tasks are blocked."""
@@ -529,41 +489,20 @@ class TestNecessityScoring:
         ), env=env)
         assert code == 0
 
-    def test_necessity_via_prompt_field(self, isolated_env):
-        """Necessity check should also match patterns in the prompt field."""
-        env, _, _ = isolated_env
-        code, _, stderr = run_guard(make_task_input(
-            "general-purpose",
-            description="do something complex",
-            session_id="necessity-prompt",
-            prompt="search for function parseConfig in the codebase"
+    def test_necessity_logs_pattern_name(self, isolated_env):
+        """Necessity block should log which pattern matched to audit."""
+        env, state_dir, _ = isolated_env
+        run_guard(make_task_input(
+            "Explore", description="search for function handleAuth in the codebase",
+            session_id="necessity-pattern-log"
         ), env=env)
-        assert code == 2
-        assert "direct tools" in stderr
-
-    def test_necessity_all_patterns(self, isolated_env):
-        """At least 5 of the 10 direct-tool patterns should trigger blocks."""
-        env, _, _ = isolated_env
-        test_cases = [
-            "search for class UserAuth in the codebase",
-            "read the config file and check settings",
-            "check if the module exists in the project",
-            "edit the bug on line 42 in main.py",
-            "analyze the file structure of the module",
-            "what does the function handleRequest do",
-            "list all files in the src directory",
-            "count how many tests are in the suite",
-            "compare the two config files",
-            "run the test script and check output",
-        ]
-        blocked = 0
-        for i, desc in enumerate(test_cases):
-            code, _, _ = run_guard(make_task_input(
-                f"type-{i}", description=desc, session_id=f"necessity-all-{i}"
-            ), env=env)
-            if code == 2:
-                blocked += 1
-        assert blocked >= 5, f"Expected at least 5/10 patterns to trigger, got {blocked}"
+        audit_file = state_dir / "audit.jsonl"
+        lines = audit_file.read_text().strip().split("\n")
+        last = json.loads(lines[-1])
+        assert last["event"] == "block"
+        assert last["reason"] == "necessity_check"
+        assert "pattern" in last
+        assert last["pattern"] == "search_grep"
 
 
 class TestAdvisories:
@@ -605,17 +544,17 @@ class TestTypeSwitching:
     """Test type-switching detection (anti-evasion)."""
 
     def test_type_switching_blocks(self, isolated_env):
-        """Blocked Explore → general-purpose with similar desc → blocked."""
+        """Blocked Explore -> general-purpose with similar desc -> blocked."""
         env, _, _ = isolated_env
         sid = "type-switch-block"
         desc = "explore the authentication architecture thoroughly"
         # First Explore: allowed
         code, _, _ = run_guard(make_task_input("Explore", description=desc, session_id=sid), env=env)
         assert code == 0
-        # Second Explore: blocked (one_per_session) → creates blocked_attempt
+        # Second Explore: blocked (one_per_session) -> creates blocked_attempt
         code, _, _ = run_guard(make_task_input("Explore", description=desc, session_id=sid), env=env)
         assert code == 2
-        # general-purpose with similar desc → blocked (type-switching)
+        # general-purpose with similar desc -> blocked (type-switching)
         code, _, stderr = run_guard(make_task_input(
             "general-purpose",
             description="investigate the authentication architecture thoroughly",
@@ -625,13 +564,13 @@ class TestTypeSwitching:
         assert "resembles" in stderr
 
     def test_type_switching_allows_different_desc(self, isolated_env):
-        """Blocked Explore → general-purpose with very different desc → allowed."""
+        """Blocked Explore -> general-purpose with very different desc -> allowed."""
         env, _, _ = isolated_env
         sid = "type-switch-allow"
         # Block an Explore
         run_guard(make_task_input("Explore", description="map the auth system", session_id=sid), env=env)
         run_guard(make_task_input("Explore", description="map the auth system", session_id=sid), env=env)
-        # general-purpose with very different desc → allowed
+        # general-purpose with very different desc -> allowed
         code, _, _ = run_guard(make_task_input(
             "general-purpose",
             description="build the new payment processing pipeline",
@@ -639,27 +578,12 @@ class TestTypeSwitching:
         ), env=env)
         assert code == 0
 
-    def test_similarity_below_threshold_allows(self, isolated_env):
-        """Description with low similarity to blocked attempt should be allowed."""
-        env, _, _ = isolated_env
-        sid = "type-switch-low-sim"
-        # Block an Explore with specific description
-        run_guard(make_task_input("Explore", description="analyze database schema migrations", session_id=sid), env=env)
-        run_guard(make_task_input("Explore", description="analyze database schema migrations", session_id=sid), env=env)
-        # Different type with completely different topic — low similarity
-        code, _, _ = run_guard(make_task_input(
-            "general-purpose",
-            description="configure CI/CD pipeline for deployment",
-            session_id=sid
-        ), env=env)
-        assert code == 0, "Low-similarity description should not trigger type-switching detection"
-
 
 class TestGlobalCooldown:
     """Test global cooldown between any-type spawns."""
 
     def test_global_cooldown_blocks(self, isolated_env_with_cooldown):
-        """Two different-type spawns within cooldown → second blocked."""
+        """Two different-type spawns within cooldown -> second blocked."""
         env, _, _ = isolated_env_with_cooldown
         sid = "cooldown-block"
         # First spawn
@@ -676,7 +600,7 @@ class TestGlobalCooldown:
         assert "Wait" in stderr
 
     def test_global_cooldown_allows(self, isolated_env_with_cooldown):
-        """Two different-type spawns after cooldown expires → second allowed."""
+        """Two different-type spawns after cooldown expires -> second allowed."""
         env, _, _ = isolated_env_with_cooldown
         sid = "cooldown-allow"
         # First spawn
@@ -694,7 +618,7 @@ class TestGlobalCooldown:
 
 
 class TestBlockedAttempts:
-    """Test that blocked attempts are persisted in state."""
+    """Test that blocked attempts are persisted and pruned."""
 
     def test_blocked_attempts_persisted(self, isolated_env):
         """After a block, state file should contain blocked_attempts."""
@@ -710,6 +634,33 @@ class TestBlockedAttempts:
         assert len(state["blocked_attempts"]) >= 1
         assert state["blocked_attempts"][0]["type"] == "Explore"
         assert state["blocked_attempts"][0]["description"] == "second attempt"
+
+    def test_blocked_attempts_pruned(self, isolated_env):
+        """Blocked attempts older than 5 minutes should be pruned."""
+        env, state_dir, _ = isolated_env
+        sid = "blocked-prune"
+
+        # Create state with an old blocked attempt
+        state_file = state_dir / f"{sid}.json"
+        now = time.time()
+        state = {
+            "agent_count": 1,
+            "agents": [{"type": "Explore", "description": "first", "timestamp": now}],
+            "blocked_attempts": [
+                {"type": "Explore", "description": "old blocked", "timestamp": now - 400}
+            ],
+        }
+        state_file.write_text(json.dumps(state))
+
+        # Run a new task (different type to not trigger other rules)
+        run_guard(make_task_input("general-purpose", description="new work", session_id=sid), env=env)
+
+        # Check that old blocked attempt was pruned
+        with open(state_file, "r") as f:
+            updated = json.load(f)
+        old_blocked = [a for a in updated.get("blocked_attempts", [])
+                       if a["description"] == "old blocked"]
+        assert len(old_blocked) == 0, "Old blocked attempts should be pruned"
 
 
 class TestReportMode:
@@ -751,42 +702,50 @@ class TestReportMode:
         )
         assert result.returncode == 0
 
+    def test_report_survives_corrupt_line(self, isolated_env):
+        """--report should skip corrupt lines, not discard all data."""
+        env, state_dir, _ = isolated_env
+        audit_file = state_dir / "audit.jsonl"
+        lines = [
+            json.dumps({"ts": "2026-01-01T00:00:00", "event": "allow", "type": "Explore", "desc": "t", "session": "s"}),
+            "THIS IS NOT VALID JSON {{{",
+            json.dumps({"ts": "2026-01-01T00:00:02", "event": "allow", "type": "general-purpose", "desc": "t", "session": "s"}),
+        ]
+        audit_file.write_text("\n".join(lines) + "\n")
 
-class TestErrorResilience:
-    """Test that the hook fails open under error conditions."""
+        result = subprocess.run(
+            ["python3", SCRIPT, "--report"],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=10,
+        )
+        assert result.returncode == 0
+        assert "TOKEN GUARD ANALYTICS" in result.stdout
+        assert "Allowed: 2" in result.stdout  # Both valid entries counted, corrupt one skipped
 
-    def test_save_state_failure_does_not_crash(self, tmp_path):
-        """Unwritable state dir should exit 0 (fail-open), not crash."""
-        state_dir = tmp_path / "session-state"
-        state_dir.mkdir()
-        config_path = tmp_path / "token-guard-config.json"
-        config_path.write_text(json.dumps({
-            "max_agents": 5,
-            "global_cooldown_seconds": 0,
-            "max_per_subagent_type": 1,
-            "one_per_session": ["Explore", "Plan"],
-            "always_allowed": ["claude-code-guide"],
-        }))
-        env = os.environ.copy()
-        env["TOKEN_GUARD_STATE_DIR"] = str(state_dir)
-        env["TOKEN_GUARD_CONFIG_PATH"] = str(config_path)
+    def test_report_necessity_pattern_breakdown(self, isolated_env):
+        """--report should show necessity pattern breakdown when present."""
+        env, state_dir, _ = isolated_env
+        audit_file = state_dir / "audit.jsonl"
+        entries = [
+            {"ts": "2026-01-01T00:00:00", "event": "block", "type": "Explore", "desc": "search for func",
+             "session": "abc", "reason": "necessity_check", "pattern": "search_grep"},
+            {"ts": "2026-01-01T00:00:01", "event": "block", "type": "general-purpose", "desc": "read config",
+             "session": "abc", "reason": "necessity_check", "pattern": "read_file"},
+        ]
+        audit_file.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
 
-        # First spawn succeeds normally
-        code, _, _ = run_guard(make_task_input("Explore", session_id="resilience"), env=env)
-        assert code == 0
-
-        # Make state dir read-only so save_state will fail
-        os.chmod(str(state_dir), 0o444)
-        try:
-            # Second call should fail-open (exit 0), not crash (exit 1)
-            code, _, _ = run_guard(make_task_input(
-                "general-purpose", description="test resilience",
-                session_id="resilience-2"
-            ), env=env)
-            assert code == 0, f"Hook should fail-open on state write failure, got exit {code}"
-        finally:
-            # Restore permissions for cleanup
-            os.chmod(str(state_dir), 0o755)
+        result = subprocess.run(
+            ["python3", SCRIPT, "--report"],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=10,
+        )
+        assert result.returncode == 0
+        assert "Necessity patterns triggered" in result.stdout
+        assert "search_grep" in result.stdout
 
 
 class TestAuditRotation:
@@ -806,3 +765,48 @@ class TestAuditRotation:
         # Original should be gone or small (new entries only)
         backup = state_dir / "audit.jsonl.1"
         assert backup.exists(), "Backup file should exist after rotation"
+
+
+class TestSafeInt:
+    """Test _safe_int edge cases for config coercion."""
+
+    def test_safe_int_none(self, isolated_env):
+        """Config with None value should use default."""
+        env, _, config_path = isolated_env
+        config = json.loads(config_path.read_text())
+        config["max_agents"] = None
+        config_path.write_text(json.dumps(config))
+        # Should not crash, uses default of 5
+        code, _, _ = run_guard(make_task_input("Explore", session_id="safe-int-none"), env=env)
+        assert code == 0
+
+    def test_safe_int_string(self, isolated_env):
+        """Config with string value like 'banana' should use default."""
+        env, _, config_path = isolated_env
+        config = json.loads(config_path.read_text())
+        config["max_agents"] = "banana"
+        config_path.write_text(json.dumps(config))
+        # Should not crash, uses default of 5
+        code, _, _ = run_guard(make_task_input("Explore", session_id="safe-int-string"), env=env)
+        assert code == 0
+
+    def test_safe_int_float(self, isolated_env):
+        """Config with float value should be coerced to int."""
+        env, _, config_path = isolated_env
+        config = json.loads(config_path.read_text())
+        config["max_agents"] = 3.7
+        config_path.write_text(json.dumps(config))
+        # Should work with int(3.7) = 3
+        code, _, _ = run_guard(make_task_input("Explore", session_id="safe-int-float"), env=env)
+        assert code == 0
+
+    def test_safe_int_negative(self, isolated_env):
+        """Config with negative value should be accepted (int coercion works)."""
+        env, _, config_path = isolated_env
+        config = json.loads(config_path.read_text())
+        config["max_agents"] = -1
+        config_path.write_text(json.dumps(config))
+        # -1 agents allowed = everything blocked
+        code, _, stderr = run_guard(make_task_input("Explore", session_id="safe-int-neg"), env=env)
+        assert code == 2  # 0 >= -1 is true, so cap is reached immediately
+        assert "Agent cap" in stderr

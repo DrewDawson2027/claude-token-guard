@@ -13,7 +13,7 @@ How it works:
 
 Checks:
   1. Duplicate file: BLOCK at 3+ reads of the same file path
-  2. Sequential reads: WARN at 4, BLOCK at 7 reads within 60s window
+  2. Sequential reads: WARN at 4, BLOCK at 10 reads within 90s window
   3. Post-Explore duplicates: Advisory warning (non-blocking)
 
 State:  ~/.claude/hooks/session-state/{session_id}-reads.json
@@ -25,35 +25,23 @@ Cross-platform: Works on macOS, Linux, and Windows (portable file locking).
 import json
 import os
 import sys
-import tempfile
 import time
+
+# Shared infrastructure — locking, state, atomic writes
+from hook_utils import lock, unlock, load_json_state, save_json_state
 
 STATE_DIR = os.environ.get("TOKEN_GUARD_STATE_DIR", os.path.expanduser("~/.claude/hooks/session-state"))
 
-# Portable file locking — fcntl on Unix, msvcrt on Windows
-if sys.platform == "win32":
-    import msvcrt
-
-    def _lock(f):
-        msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
-
-    def _unlock(f):
-        msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
-else:
-    import fcntl
-
-    def _lock(f):
-        fcntl.flock(f, fcntl.LOCK_EX)
-
-    def _unlock(f):
-        fcntl.flock(f, fcntl.LOCK_UN)
+SEQUENTIAL_THRESHOLD = 4    # Warn after this many sequential reads
+ESCALATION_THRESHOLD = 10   # Block after this many sequential reads
+DUPLICATE_FILE_LIMIT = 3    # Block same file after this many reads
+SEQUENTIAL_WINDOW = 90      # Seconds window for sequential detection
+READ_TTL = 300              # Prune read records older than 5 minutes
 
 
-SEQUENTIAL_THRESHOLD = 4   # Warn after this many sequential reads
-ESCALATION_THRESHOLD = 7   # Block after this many sequential reads
-DUPLICATE_FILE_LIMIT = 3   # Block same file after this many reads
-SEQUENTIAL_WINDOW = 60     # Seconds window for sequential detection
-READ_TTL = 300             # Prune read records older than 5 minutes
+def default_read_state():
+    """Return the default empty state for read tracking."""
+    return {"reads": [], "last_sequential_warn": 0}
 
 
 def main():
@@ -82,9 +70,9 @@ def main():
     lock_file = state_file + ".lock"
 
     with open(lock_file, "w") as lf:
-        _lock(lf)
+        lock(lf)
         try:
-            state = load_state(state_file)
+            state = load_json_state(state_file, default_read_state)
             now = time.time()
 
             # Prune old reads (older than TTL)
@@ -94,7 +82,7 @@ def main():
             path_count = sum(1 for r in state["reads"] if r["path"] == file_path) + 1  # +1 for this attempt
             if path_count >= DUPLICATE_FILE_LIMIT:
                 state["reads"].append({"path": file_path, "timestamp": now, "blocked": True})
-                save_state(state_file, state)
+                save_json_state(state_file, state)
                 print(
                     f"BLOCKED: '{os.path.basename(file_path)}' read {path_count} times already. "
                     f"Trust your first read. Use Grep for specific lines.",
@@ -102,22 +90,23 @@ def main():
                 )
                 sys.exit(2)  # REAL block — read never happens
 
-            # CHECK 2: Sequential reads — warn at 4 total, BLOCK at 7 total
+            # CHECK 2: Sequential reads — warn at 4 total, BLOCK at 10 total
             recent = [r for r in state["reads"] if now - r["timestamp"] < SEQUENTIAL_WINDOW]
             recent_count = len(recent) + 1  # +1 for this attempt
+
             if recent_count >= ESCALATION_THRESHOLD:
-                last_esc = state.get("last_escalation", 0)
-                if now - last_esc > SEQUENTIAL_WINDOW:
-                    state["last_escalation"] = now
-                    state["reads"].append({"path": file_path, "timestamp": now, "blocked": True})
-                    save_state(state_file, state)
-                    print(
-                        f"BLOCKED: {recent_count} sequential reads in {SEQUENTIAL_WINDOW}s. "
-                        f"Batch into parallel groups of 3-4 per turn.",
-                        file=sys.stderr
-                    )
-                    sys.exit(2)  # REAL block
+                # UNCONDITIONAL block — no time-based suppression for blocks
+                # (Time suppression is only for warnings, never for enforcement)
+                state["reads"].append({"path": file_path, "timestamp": now, "blocked": True})
+                save_json_state(state_file, state)
+                print(
+                    f"BLOCKED: {recent_count} sequential reads in {SEQUENTIAL_WINDOW}s. "
+                    f"Batch into parallel groups of 3-4 per turn.",
+                    file=sys.stderr
+                )
+                sys.exit(2)  # REAL block
             elif recent_count >= SEQUENTIAL_THRESHOLD:
+                # Warning uses time suppression to avoid spam (one warning per window)
                 last_warn = state.get("last_sequential_warn", 0)
                 if now - last_warn > SEQUENTIAL_WINDOW:
                     warn(
@@ -143,10 +132,10 @@ def main():
 
             # ALLOWED — record and proceed
             state["reads"].append({"path": file_path, "timestamp": now})
-            save_state(state_file, state)
+            save_json_state(state_file, state)
 
         finally:
-            _unlock(lf)
+            unlock(lf)
 
     sys.exit(0)
 
@@ -166,12 +155,12 @@ def get_explore_dirs(session_id):
     guard_lock_file = guard_state_file + ".lock"
     try:
         with open(guard_lock_file, "w") as lf:
-            _lock(lf)
+            lock(lf)
             try:
                 with open(guard_state_file, "r") as f:
                     guard_state = json.load(f)
             finally:
-                _unlock(lf)
+                unlock(lf)
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return []
 
@@ -182,35 +171,6 @@ def get_explore_dirs(session_id):
                 if known_dir not in dirs:
                     dirs.append(known_dir)
     return dirs
-
-
-def load_state(path):
-    """Load per-session read state, returning empty state on any error."""
-    try:
-        with open(path, "r") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {"reads": [], "last_sequential_warn": 0, "last_escalation": 0}
-
-
-def save_state(path, state):
-    """Atomically persist state — write to temp, then rename.
-
-    Uses os.replace() which is atomic on both POSIX and Windows.
-    If the process crashes mid-write, the original file is untouched.
-    """
-    dir_name = os.path.dirname(path)
-    fd, tmp_path = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w") as f:
-            json.dump(state, f, indent=2)
-        os.replace(tmp_path, path)
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        # Don't re-raise — state write failed but enforcement still works for this invocation
 
 
 if __name__ == "__main__":

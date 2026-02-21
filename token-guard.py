@@ -42,31 +42,23 @@ import json
 import os
 import re
 import sys
-import tempfile
 import time
+
+# Shared infrastructure — locking, state, audit
+from hook_utils import (
+    lock,
+    unlock,
+    load_json_state,
+    save_json_state,
+    locked_append,
+    read_jsonl_fault_tolerant,
+)
 
 STATE_DIR = os.environ.get("TOKEN_GUARD_STATE_DIR", os.path.expanduser("~/.claude/hooks/session-state"))
 CONFIG_PATH = os.environ.get("TOKEN_GUARD_CONFIG_PATH", os.path.expanduser("~/.claude/hooks/token-guard-config.json"))
 AUDIT_LOG = os.path.join(STATE_DIR, "audit.jsonl")
 
-# Portable file locking — fcntl on Unix, msvcrt on Windows
-if sys.platform == "win32":
-    import msvcrt
-
-    def _lock(f):
-        msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
-
-    def _unlock(f):
-        msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
-else:
-    import fcntl
-
-    def _lock(f):
-        fcntl.flock(f, fcntl.LOCK_EX)
-
-    def _unlock(f):
-        fcntl.flock(f, fcntl.LOCK_UN)
-
+BLOCKED_ATTEMPTS_TTL = 300  # Prune blocked attempts older than 5 minutes
 
 DEFAULT_CONFIG = {
     "max_agents": 5,
@@ -93,30 +85,42 @@ DEFAULT_CONFIG = {
 # Patterns that indicate a task should use direct tools instead of an agent
 DIRECT_TOOL_PATTERNS = [
     (r'\b(search|find|grep|look for|locate)\b.*\b(file|function|class|import|usage|pattern)\b',
-     "Use Grep to search for code patterns directly."),
+     "Use Grep to search for code patterns directly.",
+     "search_grep"),
     (r'\bread\b.*\b(file|config|settings|code)\b',
-     "Use Read tool to read files directly."),
+     "Use Read tool to read files directly.",
+     "read_file"),
     (r'\b(check|verify|confirm)\b.*\b(exists?|status|version|content)\b',
-     "Use Grep or Bash to check directly."),
+     "Use Grep or Bash to check directly.",
+     "check_verify"),
     (r'\b(edit|fix|change|update|modify)\b.*\b(line|bug|typo|value)\b',
-     "Use Read + Edit to fix directly."),
+     "Use Read + Edit to fix directly.",
+     "edit_fix"),
     (r'\b(analyze|look at|examine|inspect)\b.*\b(file|code|function|method)\b',
-     "Use Read to analyze the file directly."),
+     "Use Read to analyze the file directly.",
+     "analyze_inspect"),
     (r'\bwhat does\b.*\b(function|method|class|file|module)\b',
-     "Use Read to understand the code directly."),
+     "Use Read to understand the code directly.",
+     "what_does"),
     (r'\b(list|show|display)\b.*\b(files|directories|imports|dependencies)\b',
-     "Use Grep or Glob to list matches directly."),
+     "Use Grep or Glob to list matches directly.",
+     "list_show"),
     (r'\b(count|how many)\b.*\b(files|functions|classes|tests|lines)\b',
-     "Use Grep with count mode to count directly."),
+     "Use Grep with count mode to count directly.",
+     "count_how_many"),
     (r'\b(compare|diff)\b.*\b(files?|versions?)\b',
-     "Use Read on both files or Bash diff directly."),
+     "Use Read on both files or Bash diff directly.",
+     "compare_diff"),
     (r'\b(run|execute|test)\b.*\b(script|command|test)\b',
-     "Use Bash to run directly."),
+     "Use Bash to run directly.",
+     "run_execute"),
 ]
 
 
 def _safe_int(val, default):
     """Safely coerce a value to int, returning default on failure."""
+    if val is None:
+        return default
     try:
         return int(val)
     except (ValueError, TypeError):
@@ -174,8 +178,8 @@ def cleanup_stale_state(ttl_hours):
         pass
 
 
-def audit(event_type, subagent_type, description, session_id, reason=""):
-    """Append a single JSON line to the audit log. Non-critical — never crashes."""
+def audit(event_type, subagent_type, description, session_id, reason="", matched_pattern=""):
+    """Append a single JSON line to the audit log with file locking. Non-critical."""
     entry = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "event": event_type,
@@ -185,20 +189,22 @@ def audit(event_type, subagent_type, description, session_id, reason=""):
     }
     if reason:
         entry["reason"] = reason[:120]
-    try:
-        with open(AUDIT_LOG, "a") as f:
-            f.write(json.dumps(entry) + "\n")
-    except OSError:
-        pass
+    if matched_pattern:
+        entry["pattern"] = matched_pattern
+    locked_append(AUDIT_LOG, json.dumps(entry) + "\n")
 
 
 def check_necessity(description, prompt_text):
-    """Score whether this task could be handled by direct tools."""
+    """Score whether this task could be handled by direct tools.
+
+    Returns (should_block, suggestion, pattern_name).
+    pattern_name is logged to audit for tuning the regex over time.
+    """
     combined = f"{description} {prompt_text}".lower()
-    for pattern, suggestion in DIRECT_TOOL_PATTERNS:
+    for pattern, suggestion, pattern_name in DIRECT_TOOL_PATTERNS:
         if re.search(pattern, combined):
-            return True, suggestion
-    return False, ""
+            return True, suggestion, pattern_name
+    return False, "", ""
 
 
 def check_type_switching(state, description, subagent_type):
@@ -210,6 +216,11 @@ def check_type_switching(state, description, subagent_type):
         if similarity > 0.6 and attempt["type"] != subagent_type:
             return True, attempt["type"]
     return False, ""
+
+
+def default_state():
+    """Return the default empty state for a new session."""
+    return {"agent_count": 0, "agents": [], "blocked_attempts": []}
 
 
 def main():
@@ -260,15 +271,17 @@ def main():
 
     # File-locked state access (prevents race conditions from parallel tool calls)
     lock_file = state_file + ".lock"
-    try:
-        lf = open(lock_file, "w")
-    except OSError:
-        sys.exit(0)  # Can't create lock file — fail-open
-    with lf:
-        _lock(lf)
+    with open(lock_file, "w") as lf:
+        lock(lf)
         try:
-            state = load_state(state_file)
+            state = load_json_state(state_file, default_state)
             now = time.time()
+
+            # Prune stale blocked_attempts (5-minute TTL)
+            state["blocked_attempts"] = [
+                a for a in state.get("blocked_attempts", [])
+                if now - a.get("timestamp", 0) < BLOCKED_ATTEMPTS_TTL
+            ]
 
             # TEAM DETECTION — team spawns bypass rules but count toward session cap
             if tool_input.get("team_name"):
@@ -286,7 +299,7 @@ def main():
                     "type": subagent_type, "description": description,
                     "timestamp": now, "team": tool_input["team_name"],
                 })
-                save_state(state_file, state)
+                save_json_state(state_file, state)
                 if audit_enabled:
                     audit("allow_team", subagent_type, description, session_id)
                 sys.exit(0)
@@ -303,7 +316,7 @@ def main():
                     state.setdefault("blocked_attempts", []).append({
                         "type": subagent_type, "description": description, "timestamp": now
                     })
-                    save_state(state_file, state)
+                    save_json_state(state_file, state)
                     if audit_enabled:
                         audit("block", subagent_type, description, session_id, "one_per_session limit")
                     block(reason)
@@ -318,7 +331,7 @@ def main():
                 state.setdefault("blocked_attempts", []).append({
                     "type": subagent_type, "description": description, "timestamp": now
                 })
-                save_state(state_file, state)
+                save_json_state(state_file, state)
                 if audit_enabled:
                     audit("block", subagent_type, description, session_id, "max_per_type limit")
                 block(reason)
@@ -333,7 +346,7 @@ def main():
                 state.setdefault("blocked_attempts", []).append({
                     "type": subagent_type, "description": description, "timestamp": now
                 })
-                save_state(state_file, state)
+                save_json_state(state_file, state)
                 if audit_enabled:
                     audit("block", subagent_type, description, session_id, "session_cap limit")
                 block(reason)
@@ -353,13 +366,13 @@ def main():
                 state.setdefault("blocked_attempts", []).append({
                     "type": subagent_type, "description": description, "timestamp": now
                 })
-                save_state(state_file, state)
+                save_json_state(state_file, state)
                 if audit_enabled:
                     audit("block", subagent_type, description, session_id, "parallel_window limit")
                 block(reason)
 
             # RULE 5: Necessity check — block obviously simple tasks
-            should_block, suggestion = check_necessity(description, tool_input.get("prompt", ""))
+            should_block, suggestion, pattern_name = check_necessity(description, tool_input.get("prompt", ""))
             if should_block:
                 reason = (
                     f"BLOCKED: This task can be handled with direct tools. "
@@ -369,9 +382,9 @@ def main():
                 state.setdefault("blocked_attempts", []).append({
                     "type": subagent_type, "description": description, "timestamp": now
                 })
-                save_state(state_file, state)
+                save_json_state(state_file, state)
                 if audit_enabled:
-                    audit("block", subagent_type, description, session_id, "necessity_check")
+                    audit("block", subagent_type, description, session_id, "necessity_check", pattern_name)
                 block(reason)
 
             # RULE 6: Type-switching detection
@@ -384,7 +397,7 @@ def main():
                 state.setdefault("blocked_attempts", []).append({
                     "type": subagent_type, "description": description, "timestamp": now
                 })
-                save_state(state_file, state)
+                save_json_state(state_file, state)
                 if audit_enabled:
                     audit("block", subagent_type, description, session_id, "type_switching")
                 block(reason)
@@ -401,7 +414,7 @@ def main():
                     state.setdefault("blocked_attempts", []).append({
                         "type": subagent_type, "description": description, "timestamp": now
                     })
-                    save_state(state_file, state)
+                    save_json_state(state_file, state)
                     if audit_enabled:
                         audit("block", subagent_type, description, session_id, "global_cooldown")
                     block(reason)
@@ -441,13 +454,13 @@ def main():
 
             state["agent_count"] += 1
             state["agents"].append(agent_record)
-            save_state(state_file, state)
+            save_json_state(state_file, state)
 
             if audit_enabled:
                 audit("allow", subagent_type, description, session_id)
 
         finally:
-            _unlock(lf)
+            unlock(lf)
 
     sys.exit(0)  # Allow
 
@@ -456,35 +469,6 @@ def block(reason):
     """Block the tool call with feedback to Claude."""
     print(reason, file=sys.stderr)
     sys.exit(2)
-
-
-def load_state(path):
-    """Load per-session state, returning empty state on any error."""
-    try:
-        with open(path, "r") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {"agent_count": 0, "agents": [], "blocked_attempts": []}
-
-
-def save_state(path, state):
-    """Atomically persist state — write to temp, then rename.
-
-    Uses os.replace() which is atomic on both POSIX and Windows.
-    If the process crashes mid-write, the original file is untouched.
-    """
-    dir_name = os.path.dirname(path)
-    fd, tmp_path = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w") as f:
-            json.dump(state, f, indent=2)
-        os.replace(tmp_path, path)
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        # Don't re-raise — state write failed but enforcement still works for this invocation
 
 
 def extract_target_dirs(prompt):
@@ -514,17 +498,16 @@ def extract_target_dirs(prompt):
 def report():
     """Print cross-session analytics from audit log."""
     from collections import Counter
-    try:
-        with open(AUDIT_LOG, "r") as f:
-            entries = [json.loads(line) for line in f if line.strip()]
-    except (FileNotFoundError, json.JSONDecodeError):
+
+    entries = read_jsonl_fault_tolerant(AUDIT_LOG)
+    if not entries:
         print("No audit data found.")
         return
 
-    allows = [e for e in entries if e["event"] == "allow"]
-    blocks = [e for e in entries if e["event"] == "block"]
-    resumes = [e for e in entries if e["event"] == "resume"]
-    teams = [e for e in entries if e["event"] == "allow_team"]
+    allows = [e for e in entries if e.get("event") == "allow"]
+    blocks = [e for e in entries if e.get("event") == "block"]
+    resumes = [e for e in entries if e.get("event") == "resume"]
+    teams = [e for e in entries if e.get("event") == "allow_team"]
     total = len(allows) + len(blocks)
 
     print(f"\n{'='*40}")
@@ -536,12 +519,20 @@ def report():
     print(f"Resumes: {len(resumes)}")
     print(f"Team spawns: {len(teams)}")
     print(f"\nTop agent types:")
-    for t, c in Counter(e["type"] for e in allows).most_common(5):
+    for t, c in Counter(e.get("type", "?") for e in allows).most_common(5):
         print(f"  {t}: {c}")
     print(f"\nBlock reasons:")
     for r, c in Counter(e.get("reason", "?") for e in blocks).most_common(5):
         print(f"  {r}: {c}")
-    print(f"\nUnique sessions: {len(set(e['session'] for e in entries))}")
+
+    # Necessity pattern breakdown (feedback loop for tuning)
+    necessity_blocks = [e for e in blocks if e.get("reason") == "necessity_check"]
+    if necessity_blocks:
+        print(f"\nNecessity patterns triggered:")
+        for p, c in Counter(e.get("pattern", "?") for e in necessity_blocks).most_common(10):
+            print(f"  {p}: {c}")
+
+    print(f"\nUnique sessions: {len(set(e.get('session', '?') for e in entries))}")
     print(f"{'='*40}\n")
 
 

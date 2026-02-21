@@ -8,7 +8,7 @@
 #
 # Part of the Token Management System:
 #   token-guard.py          → blocks illegal agent spawns (PreToolUse)
-#   read-efficiency-guard.py → warns on wasteful reads (PostToolUse)
+#   read-efficiency-guard.py → blocks wasteful reads (PreToolUse, matcher: Read)
 #   health-check.sh         → validates + reports (manual)
 
 STATE_DIR="$HOME/.claude/hooks/session-state"
@@ -238,18 +238,18 @@ fi
 
 # Check token-guard is registered in global settings
 if [ -f ~/.claude/settings.json ]; then
-  if jq -e '.hooks.PreToolUse[].hooks[]? | select(.command | contains("token-guard"))' ~/.claude/settings.json &>/dev/null; then
+  if jq -e '.hooks.PreToolUse[].hooks[]? | select(.command? // "" | contains("token-guard"))' ~/.claude/settings.json &>/dev/null; then
     echo "  PASS  token-guard registered in PreToolUse"
     PASS=$((PASS + 1))
   else
     echo "  FAIL  token-guard NOT registered in PreToolUse"
     FAIL=$((FAIL + 1))
   fi
-  if jq -e '.hooks.PostToolUse[].hooks[]? | select(.command | contains("read-efficiency-guard"))' ~/.claude/settings.json &>/dev/null; then
-    echo "  PASS  read-efficiency-guard registered in PostToolUse"
+  if jq -e '.hooks.PreToolUse[].hooks[]? | select(.command? // "" | contains("read-efficiency-guard"))' ~/.claude/settings.json &>/dev/null; then
+    echo "  PASS  read-efficiency-guard registered in PreToolUse"
     PASS=$((PASS + 1))
   else
-    echo "  FAIL  read-efficiency-guard NOT registered in PostToolUse"
+    echo "  FAIL  read-efficiency-guard NOT registered in PreToolUse"
     FAIL=$((FAIL + 1))
   fi
 fi
