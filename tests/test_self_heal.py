@@ -264,11 +264,11 @@ class TestHealLog:
         assert "actions" in entry
 
 
-class TestAuditTruncation:
-    """Test audit log size management."""
+class TestAuditRotation:
+    """Test audit log rotation (rotate-to-backup strategy)."""
 
-    def test_large_audit_truncated(self, isolated_env):
-        """Audit log over 10K lines should be truncated to 5K."""
+    def test_large_audit_rotated(self, isolated_env):
+        """Audit log over 10K lines should be rotated to .1 backup."""
         env, state_dir, _ = isolated_env
         audit_file = state_dir / "audit.jsonl"
         # Write 11K lines
@@ -277,11 +277,12 @@ class TestAuditTruncation:
 
         run_heal(env=env)
 
-        result_lines = audit_file.read_text().strip().split("\n")
-        assert len(result_lines) == 5000, f"Expected 5000 lines after truncation, got {len(result_lines)}"
-        # Should keep the LAST 5000 lines
-        last = json.loads(result_lines[-1])
-        assert last["line"] == 10999
+        # Original file should be gone (rotated away)
+        # Self-heal's own log write may recreate it with 1 entry
+        backup = state_dir / "audit.jsonl.1"
+        assert backup.exists(), "Backup file should exist after rotation"
+        backup_lines = backup.read_text().strip().split("\n")
+        assert len(backup_lines) == 11000, f"Backup should have all 11K lines, got {len(backup_lines)}"
 
     def test_small_audit_untouched(self, isolated_env):
         """Audit log under 10K lines should not be touched."""
@@ -299,27 +300,34 @@ class TestAuditTruncation:
 class TestAutoRepair:
     """Test auto-repair of hook permissions."""
 
-    def test_nonexecutable_sh_gets_fixed(self, isolated_env):
-        """health-check.sh with 644 permissions should be fixed to 755 by self-heal."""
+    def test_nonexecutable_sh_gets_fixed(self, isolated_env, tmp_path):
+        """health-check.sh with 644 permissions should be fixed to 755 by self-heal.
+
+        Uses a temp directory with a copy of the hook files to avoid mutating
+        real filesystem state (test isolation).
+        """
         env, _, _ = isolated_env
-        hc_path = os.path.expanduser("~/.claude/hooks/health-check.sh")
-        if not os.path.isfile(hc_path):
-            pytest.skip("health-check.sh not found")
 
-        # Save original permissions
-        original_mode = os.stat(hc_path).st_mode
+        # Create an isolated hooks directory with a non-executable .sh file
+        fake_hooks = tmp_path / "hooks"
+        fake_hooks.mkdir()
+        fake_hc = fake_hooks / "health-check.sh"
+        fake_hc.write_text("#!/bin/bash\necho ok\n")
+        fake_hc.chmod(0o644)
 
-        try:
-            # Remove execute bit
-            os.chmod(hc_path, 0o644)
-            assert not os.access(hc_path, os.X_OK), "Should not be executable after chmod 644"
+        # Also create the required Python hooks so structural checks pass
+        for name in ["token-guard.py", "read-efficiency-guard.py", "hook_utils.py"]:
+            src = os.path.expanduser(f"~/.claude/hooks/{name}")
+            if os.path.isfile(src):
+                (fake_hooks / name).write_text(open(src).read())
 
-            code, stdout, _ = run_heal(env=env)
-            assert code == 0
+        env["TOKEN_GUARD_HOOKS_DIR"] = str(fake_hooks)
 
-            # Self-heal should have restored execute permission
-            assert os.access(hc_path, os.X_OK), "Self-heal should restore execute permission"
-            assert "REPAIRED" in stdout or "chmod" in stdout
-        finally:
-            # Restore original permissions
-            os.chmod(hc_path, original_mode)
+        assert not os.access(str(fake_hc), os.X_OK), "Should not be executable after chmod 644"
+
+        code, stdout, _ = run_heal(env=env)
+        assert code == 0
+
+        # Self-heal should have restored execute permission
+        assert os.access(str(fake_hc), os.X_OK), "Self-heal should restore execute permission"
+        assert "REPAIRED" in stdout or "chmod" in stdout

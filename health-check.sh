@@ -134,7 +134,7 @@ check() {
       FAIL=$((FAIL + 1))
     fi
   elif [[ "$file" == *.py ]]; then
-    if python3 -c "import py_compile; py_compile.compile('$file', doraise=True)" 2>/dev/null; then
+    if python3 -c "import py_compile, sys; py_compile.compile(sys.argv[1], doraise=True)" "$file" 2>/dev/null; then
       echo "  PASS  $name"
       PASS=$((PASS + 1))
     else
@@ -157,8 +157,9 @@ check "terminal-heartbeat" ~/.claude/hooks/terminal-heartbeat.sh required
 check "session-register" ~/.claude/hooks/session-register.sh required
 check "check-inbox" ~/.claude/hooks/check-inbox.sh required
 check "session-end" ~/.claude/hooks/session-end.sh required
-check "token-guard" ~/.claude/hooks/token-guard.py optional
-check "read-efficiency-guard" ~/.claude/hooks/read-efficiency-guard.py optional
+check "token-guard" ~/.claude/hooks/token-guard.py required
+check "read-efficiency-guard" ~/.claude/hooks/read-efficiency-guard.py required
+check "hook-utils" ~/.claude/hooks/hook_utils.py required
 
 echo ""
 echo "MCP Coordinator:"

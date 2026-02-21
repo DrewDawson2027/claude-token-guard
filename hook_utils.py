@@ -117,3 +117,28 @@ def read_jsonl_fault_tolerant(path):
     except (FileNotFoundError, OSError):
         pass
     return entries
+
+
+# Single source of truth for default config — used by token-guard.py and self-heal.py.
+# Both import from here to prevent config drift.
+DEFAULT_CONFIG = {
+    "max_agents": 5,
+    "parallel_window_seconds": 30,
+    "global_cooldown_seconds": 5,
+    "max_per_subagent_type": 1,
+    "state_ttl_hours": 24,
+    "audit_log": True,
+    "one_per_session": [
+        "Explore",
+        "deep-researcher",
+        "ssrn-researcher",
+        "competitor-tracker",
+        "gtm-strategist",
+        "Plan",
+    ],
+    "always_allowed": [
+        "claude-code-guide",
+        "statusline-setup",
+        "haiku",
+    ],
+}

@@ -189,3 +189,62 @@ class TestHookUtilsIntegration:
             entry = json.loads(line)  # Should not raise
             assert "event" in entry
             assert "type" in entry
+
+
+class TestConcurrentExecution:
+    """Test that concurrent hook calls don't corrupt state."""
+
+    def test_concurrent_read_guard_calls(self, integrated_env):
+        """10 parallel read-guard calls should not corrupt state."""
+        import concurrent.futures
+        env, state_dir = integrated_env
+        sid = "concurrent-reads"
+
+        def do_read(i):
+            return run_read_guard({
+                "tool_name": "Read",
+                "tool_input": {"file_path": f"/file{i}.py"},
+                "session_id": sid,
+            }, env=env)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            futures = [executor.submit(do_read, i) for i in range(10)]
+            results = [f.result() for f in futures]
+
+        # All should complete without crash (exit 0 or 2, never 1)
+        for code, _, _ in results:
+            assert code in (0, 2), f"Unexpected exit code {code} — hook crashed"
+
+        # State file should be valid JSON
+        state_file = state_dir / f"{sid}-reads.json"
+        state = json.loads(state_file.read_text())
+        assert "reads" in state
+
+    def test_concurrent_token_guard_calls(self, integrated_env):
+        """5 parallel token-guard calls should not corrupt state."""
+        import concurrent.futures
+        env, state_dir = integrated_env
+        sid = "concurrent-tokens"
+
+        def do_spawn(i):
+            return run_token_guard({
+                "tool_name": "Task",
+                "tool_input": {
+                    "subagent_type": f"type-{i}",
+                    "description": f"concurrent task {i} with complex multi-service refactoring",
+                },
+                "session_id": sid,
+            }, env=env)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            futures = [executor.submit(do_spawn, i) for i in range(5)]
+            results = [f.result() for f in futures]
+
+        # All should complete without crash (exit 0 or 2, never 1)
+        for code, _, _ in results:
+            assert code in (0, 2), f"Unexpected exit code {code} — hook crashed"
+
+        # State file should be valid JSON
+        state_file = state_dir / f"{sid}.json"
+        state = json.loads(state_file.read_text())
+        assert "agents" in state

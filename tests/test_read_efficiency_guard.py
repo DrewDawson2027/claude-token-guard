@@ -383,3 +383,23 @@ class TestBlockBehavior:
         code, _, stderr = run_guard(make_read_input("/file9.py", sid), env=env)
         assert code == 2, "10th sequential read should be blocked"
         assert "BLOCKED" in stderr
+
+
+class TestErrorResilience:
+    """Test fail-open behavior when state dir is degraded."""
+
+    def test_readonly_state_dir_fails_open(self, tmp_path):
+        """Read-only state dir should cause exit 0 (fail-open), never exit 1."""
+        state_dir = tmp_path / "readonly-state"
+        state_dir.mkdir()
+        env = os.environ.copy()
+        env["TOKEN_GUARD_STATE_DIR"] = str(state_dir)
+
+        # Make state dir read-only AFTER creating it
+        os.chmod(str(state_dir), 0o555)
+        try:
+            code, _, _ = run_guard(make_read_input("/test/file.py", "readonly-test"), env=env)
+            # Must be 0 (fail-open), never 1 (crash)
+            assert code == 0, f"Expected fail-open (exit 0), got exit {code}"
+        finally:
+            os.chmod(str(state_dir), 0o755)

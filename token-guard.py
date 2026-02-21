@@ -44,8 +44,9 @@ import re
 import sys
 import time
 
-# Shared infrastructure — locking, state, audit
+# Shared infrastructure — locking, state, audit, config
 from hook_utils import (
+    DEFAULT_CONFIG,
     lock,
     unlock,
     load_json_state,
@@ -60,27 +61,7 @@ AUDIT_LOG = os.path.join(STATE_DIR, "audit.jsonl")
 
 BLOCKED_ATTEMPTS_TTL = 300  # Prune blocked attempts older than 5 minutes
 
-DEFAULT_CONFIG = {
-    "max_agents": 5,
-    "parallel_window_seconds": 30,
-    "global_cooldown_seconds": 5,
-    "max_per_subagent_type": 1,
-    "state_ttl_hours": 24,
-    "audit_log": True,
-    "one_per_session": [
-        "Explore",
-        "deep-researcher",
-        "ssrn-researcher",
-        "competitor-tracker",
-        "gtm-strategist",
-        "Plan",
-    ],
-    "always_allowed": [
-        "claude-code-guide",
-        "statusline-setup",
-        "haiku",
-    ],
-}
+## DEFAULT_CONFIG is imported from hook_utils (single source of truth)
 
 # Patterns that indicate a task should use direct tools instead of an agent
 DIRECT_TOOL_PATTERNS = [
@@ -164,18 +145,8 @@ def cleanup_stale_state(ttl_hours):
                 pass
     except OSError:
         pass
-
-    # Rotate audit log if over 10K lines
-    try:
-        with open(AUDIT_LOG, "r") as f:
-            line_count = sum(1 for _ in f)
-        if line_count > 10000:
-            backup = AUDIT_LOG + ".1"
-            if os.path.exists(backup):
-                os.unlink(backup)
-            os.rename(AUDIT_LOG, backup)
-    except OSError:
-        pass
+    # Audit log rotation is handled by self-heal.py on session start,
+    # not here on the hot path. See self-heal.py phase_state_health().
 
 
 def audit(event_type, subagent_type, description, session_id, reason="", matched_pattern=""):
@@ -271,7 +242,11 @@ def main():
 
     # File-locked state access (prevents race conditions from parallel tool calls)
     lock_file = state_file + ".lock"
-    with open(lock_file, "w") as lf:
+    try:
+        lf = open(lock_file, "w")
+    except OSError:
+        sys.exit(0)  # Can't create lock file — fail-open
+    try:
         lock(lf)
         try:
             state = load_json_state(state_file, default_state)
@@ -461,6 +436,8 @@ def main():
 
         finally:
             unlock(lf)
+    finally:
+        lf.close()
 
     sys.exit(0)  # Allow
 
@@ -480,8 +457,8 @@ def extract_target_dirs(prompt):
     dirs = []
     patterns = [
         r'(?:START:\s*)(~?/[^\s\n,]+)',            # START: /any/path
-        r'(?:^|\s)(~?/(?:Users|home)/[^\s\n,]+)',  # Any absolute user path
         r'(?:^|\s)(~/[^\s\n,]+)',                   # Any ~/ path
+        r'(?:^|\s)(/[^\s\n,]+/[^\s\n,]+)',         # Any /foo/bar multi-segment absolute path
     ]
     for pattern in patterns:
         for match in re.finditer(pattern, prompt):

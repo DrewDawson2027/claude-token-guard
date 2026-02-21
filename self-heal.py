@@ -20,7 +20,24 @@ import sys
 import tempfile
 import time
 
-HOOKS_DIR = os.path.expanduser("~/.claude/hooks")
+# Import shared config (single source of truth — prevents config drift).
+# Fallback to inline copy if hook_utils is broken (self-heal must be self-contained).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    from hook_utils import DEFAULT_CONFIG
+except (ImportError, SyntaxError):
+    DEFAULT_CONFIG = {
+        "max_agents": 5, "parallel_window_seconds": 30, "global_cooldown_seconds": 5,
+        "max_per_subagent_type": 1, "state_ttl_hours": 24, "audit_log": True,
+        "one_per_session": ["Explore", "deep-researcher", "ssrn-researcher",
+                            "competitor-tracker", "gtm-strategist", "Plan"],
+        "always_allowed": ["claude-code-guide", "statusline-setup", "haiku"],
+    }
+
+HOOKS_DIR = os.environ.get(
+    "TOKEN_GUARD_HOOKS_DIR",
+    os.path.expanduser("~/.claude/hooks"),
+)
 STATE_DIR = os.environ.get(
     "TOKEN_GUARD_STATE_DIR",
     os.path.expanduser("~/.claude/hooks/session-state"),
@@ -31,31 +48,20 @@ CONFIG_PATH = os.environ.get(
 )
 HEAL_LOG = os.path.join(STATE_DIR, "self-heal.jsonl")
 
-DEFAULT_CONFIG = {
-    "max_agents": 5,
-    "parallel_window_seconds": 30,
-    "max_per_subagent_type": 1,
-    "state_ttl_hours": 24,
-    "audit_log": True,
-    "one_per_session": [
-        "Explore", "deep-researcher", "ssrn-researcher",
-        "competitor-tracker", "gtm-strategist", "Plan",
-    ],
-    "always_allowed": ["claude-code-guide", "statusline-setup", "haiku"],
-}
-
 REQUIRED_HOOKS = {
     "token-guard.py": os.path.join(HOOKS_DIR, "token-guard.py"),
     "read-efficiency-guard.py": os.path.join(HOOKS_DIR, "read-efficiency-guard.py"),
+    "hook_utils.py": os.path.join(HOOKS_DIR, "hook_utils.py"),
     "health-check.sh": os.path.join(HOOKS_DIR, "health-check.sh"),
 }
 
 AUDIT_MAX_LINES = 10000
-AUDIT_TRUNCATE_TO = 5000
 STALE_LOCK_SECONDS = 300  # 5 minutes
 
 
 def main():
+    # NOTE: DEFAULT_CONFIG is imported from hook_utils with fallback (see top of file).
+    # self-heal remains self-contained even if hook_utils is broken.
     checks = 0
     repairs = 0
     actions = []
@@ -177,7 +183,17 @@ def phase_smoke_tests():
         smoke_env["TOKEN_GUARD_STATE_DIR"] = smoke_state
         smoke_env["TOKEN_GUARD_CONFIG_PATH"] = smoke_config
 
-        valid_input = json.dumps({
+        # Task input for token-guard (tests the enforcement path, not just boot)
+        valid_task_input = json.dumps({
+            "tool_name": "Task",
+            "tool_input": {
+                "subagent_type": "general-purpose",
+                "description": "refactor authentication across multiple services",
+            },
+            "session_id": "smoke-test",
+        })
+        # Read input for read-efficiency-guard
+        valid_read_input = json.dumps({
             "tool_name": "Read",
             "tool_input": {"file_path": "/tmp/test.py"},
             "session_id": "smoke-test",
@@ -190,7 +206,7 @@ def phase_smoke_tests():
             try:
                 result = subprocess.run(
                     ["python3", tg_path],
-                    input=valid_input,
+                    input=valid_task_input,
                     capture_output=True,
                     text=True,
                     env=smoke_env,
@@ -210,7 +226,7 @@ def phase_smoke_tests():
             try:
                 result = subprocess.run(
                     ["python3", reg_path],
-                    input=valid_input,
+                    input=valid_read_input,
                     capture_output=True,
                     text=True,
                     env=smoke_env,
@@ -295,17 +311,19 @@ def phase_state_health():
             except OSError:
                 pass
 
-    # Check audit.jsonl size
+    # Check audit.jsonl size — rotate to .1 backup (same strategy as token-guard)
     audit_path = os.path.join(STATE_DIR, "audit.jsonl")
     if os.path.isfile(audit_path):
         checks += 1
         try:
             with open(audit_path, "r") as f:
-                lines = f.readlines()
-            if len(lines) > AUDIT_MAX_LINES:
-                with open(audit_path, "w") as f:
-                    f.writelines(lines[-AUDIT_TRUNCATE_TO:])
-                actions.append(f"truncated audit.jsonl from {len(lines)} to {AUDIT_TRUNCATE_TO} lines")
+                line_count = sum(1 for _ in f)
+            if line_count > AUDIT_MAX_LINES:
+                backup = audit_path + ".1"
+                if os.path.exists(backup):
+                    os.unlink(backup)
+                os.rename(audit_path, backup)
+                actions.append(f"rotated audit.jsonl ({line_count} lines) to .1 backup")
                 repairs += 1
         except OSError:
             pass

@@ -8,7 +8,6 @@ All tests use isolated temp directories so they never touch real session state.
 import json
 import os
 import subprocess
-import tempfile
 import time
 
 import pytest
@@ -748,25 +747,6 @@ class TestReportMode:
         assert "search_grep" in result.stdout
 
 
-class TestAuditRotation:
-    """Test audit log rotation."""
-
-    def test_audit_rotation(self, isolated_env):
-        """Audit log with >10K lines should be rotated to .1 backup."""
-        env, state_dir, _ = isolated_env
-        audit_file = state_dir / "audit.jsonl"
-        # Create an audit file with 10001 lines
-        entry = json.dumps({"ts": "2026-01-01T00:00:00", "event": "allow", "type": "x", "desc": "t", "session": "s"})
-        audit_file.write_text((entry + "\n") * 10001)
-
-        # Run the guard — cleanup includes rotation
-        run_guard(make_task_input("general-purpose", description="trigger rotation", session_id="rotation-test"), env=env)
-
-        # Original should be gone or small (new entries only)
-        backup = state_dir / "audit.jsonl.1"
-        assert backup.exists(), "Backup file should exist after rotation"
-
-
 class TestSafeInt:
     """Test _safe_int edge cases for config coercion."""
 
@@ -810,3 +790,65 @@ class TestSafeInt:
         code, _, stderr = run_guard(make_task_input("Explore", session_id="safe-int-neg"), env=env)
         assert code == 2  # 0 >= -1 is true, so cap is reached immediately
         assert "Agent cap" in stderr
+
+
+class TestErrorResilience:
+    """Test fail-open behavior when state dir is degraded."""
+
+    def test_readonly_state_dir_fails_open(self, tmp_path):
+        """Read-only state dir should cause exit 0 (fail-open), never exit 1."""
+        state_dir = tmp_path / "readonly-state"
+        state_dir.mkdir()
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "max_agents": 5, "parallel_window_seconds": 30,
+            "global_cooldown_seconds": 0, "max_per_subagent_type": 1,
+        }))
+        env = os.environ.copy()
+        env["TOKEN_GUARD_STATE_DIR"] = str(state_dir)
+        env["TOKEN_GUARD_CONFIG_PATH"] = str(config_path)
+
+        # Make state dir read-only AFTER creating it
+        os.chmod(str(state_dir), 0o555)
+        try:
+            code, _, _ = run_guard(
+                make_task_input("Explore", session_id="readonly-test"), env=env
+            )
+            # Must be 0 (fail-open), never 1 (crash)
+            assert code == 0, f"Expected fail-open (exit 0), got exit {code}"
+        finally:
+            os.chmod(str(state_dir), 0o755)
+
+
+class TestExtractTargetDirsNonstandard:
+    """Test extract_target_dirs with non-standard paths."""
+
+    def test_extract_nonstandard_home(self, isolated_env):
+        """Non-standard home like /data/users/drew/project should be extracted."""
+        env, state_dir, _ = isolated_env
+        code, _, _ = run_guard(make_task_input(
+            "Explore", session_id="dirs-nonstandard",
+            prompt="GOAL: Map code\nSTART: /data/users/drew/project\nSTOP WHEN: done"
+        ), env=env)
+        assert code == 0
+        with open(state_dir / "dirs-nonstandard.json", "r") as f:
+            state = json.load(f)
+        agents = state["agents"]
+        assert len(agents) == 1
+        assert "target_dirs" in agents[0]
+        assert "/data/users/drew/project" in agents[0]["target_dirs"]
+
+    def test_extract_multi_segment_absolute(self, isolated_env):
+        """Multi-segment absolute paths like /opt/app/src should be extracted."""
+        env, state_dir, _ = isolated_env
+        code, _, _ = run_guard(make_task_input(
+            "Explore", session_id="dirs-multi",
+            prompt="Map the architecture of /opt/app/src thoroughly"
+        ), env=env)
+        assert code == 0
+        with open(state_dir / "dirs-multi.json", "r") as f:
+            state = json.load(f)
+        agents = state["agents"]
+        assert len(agents) == 1
+        assert "target_dirs" in agents[0]
+        assert "/opt/app/src" in agents[0]["target_dirs"]

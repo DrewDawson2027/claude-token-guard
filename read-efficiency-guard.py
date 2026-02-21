@@ -69,7 +69,11 @@ def main():
     state_file = os.path.join(STATE_DIR, f"{session_id}-reads.json")
     lock_file = state_file + ".lock"
 
-    with open(lock_file, "w") as lf:
+    try:
+        lf = open(lock_file, "w")
+    except OSError:
+        sys.exit(0)  # Can't create lock file — fail-open
+    try:
         lock(lf)
         try:
             state = load_json_state(state_file, default_read_state)
@@ -136,6 +140,8 @@ def main():
 
         finally:
             unlock(lf)
+    finally:
+        lf.close()
 
     sys.exit(0)
 
