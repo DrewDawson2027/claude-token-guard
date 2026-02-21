@@ -1,0 +1,63 @@
+<svg width="900" height="200" viewBox="0 0 900 200" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0d1117"/>
+      <stop offset="100%" stop-color="#161b22"/>
+    </linearGradient>
+    <linearGradient id="title-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#58a6ff"/>
+      <stop offset="60%" stop-color="#a371f7"/>
+      <stop offset="100%" stop-color="#f78166"/>
+    </linearGradient>
+    <linearGradient id="accent-line" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#58a6ff" stop-opacity="0"/>
+      <stop offset="30%" stop-color="#58a6ff"/>
+      <stop offset="70%" stop-color="#a371f7"/>
+      <stop offset="100%" stop-color="#a371f7" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="900" height="200" rx="12" fill="url(#bg-grad)"/>
+  <!-- Outer border -->
+  <rect width="898" height="198" x="1" y="1" rx="11" fill="none" stroke="#21262d" stroke-width="1"/>
+
+  <!-- Shield icon (left of title) -->
+  <g transform="translate(330, 52)" filter="url(#glow)">
+    <path d="M20 0 C20 0 38 4 38 4 L38 22 C38 32 20 40 20 40 C20 40 2 32 2 22 L2 4 Z"
+          fill="none" stroke="url(#title-grad)" stroke-width="1.5" stroke-linejoin="round"/>
+    <path d="M12 20 L17 25 L28 13"
+          fill="none" stroke="#58a6ff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+
+  <!-- Main title -->
+  <text x="450" y="108"
+        font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif"
+        font-size="46" font-weight="700" fill="url(#title-grad)"
+        text-anchor="middle" letter-spacing="-0.5"
+        filter="url(#glow)">Claude Token Guard</text>
+
+  <!-- Accent divider line -->
+  <rect x="225" y="120" width="450" height="1.5" rx="1" fill="url(#accent-line)"/>
+
+  <!-- Subtitle -->
+  <text x="450" y="148"
+        font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif"
+        font-size="17" fill="#8b949e" text-anchor="middle">
+    Stop Claude Code from burning your API budget
+  </text>
+
+  <!-- Stats row -->
+  <text x="450" y="176"
+        font-family="ui-monospace, 'SFMono-Regular', 'SF Mono', Menlo, Consolas, monospace"
+        font-size="12" fill="#484f58" text-anchor="middle">
+    mechanical enforcement · zero dependencies · 96 tests · pure python
+  </text>
+</svg>
