@@ -50,4 +50,3 @@ token_guard = _load_module("token_guard", "token-guard.py")
 read_guard = _load_module("read_guard", "read-efficiency-guard.py")
 
 # hook_utils can be imported normally (no hyphens)
-import hook_utils  # noqa: E402

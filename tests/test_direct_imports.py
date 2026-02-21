@@ -6,18 +6,16 @@ so mutmut can detect source mutations. They complement the subprocess-based
 integration tests in test_token_guard.py and test_read_efficiency_guard.py.
 """
 
-import json
 import os
 import tempfile
 import time
 
-import pytest
+import read_guard
 
 # These are loaded by conftest.py via importlib (hyphenated filenames)
 import token_guard
-import read_guard
-import hook_utils
 
+import hook_utils
 
 # ---------------------------------------------------------------------------
 # token_guard.check_necessity — the core blocking decision

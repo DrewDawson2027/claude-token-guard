@@ -49,12 +49,12 @@ from typing import Any, Dict, List, Tuple
 # Shared infrastructure — locking, state, audit, config
 from hook_utils import (
     DEFAULT_CONFIG,
-    lock,
-    unlock,
     load_json_state,
-    save_json_state,
+    lock,
     locked_append,
     read_jsonl_fault_tolerant,
+    save_json_state,
+    unlock,
 )
 
 STATE_DIR = os.environ.get("TOKEN_GUARD_STATE_DIR", os.path.expanduser("~/.claude/hooks/session-state"))
@@ -633,24 +633,24 @@ def report() -> None:
     total = len(allows) + len(blocks)
 
     print(f"\n{'='*40}")
-    print(f"  TOKEN GUARD ANALYTICS")
+    print("  TOKEN GUARD ANALYTICS")
     print(f"{'='*40}")
     print(f"Total attempts: {total}")
     print(f"Allowed: {len(allows)} ({len(allows)/max(total,1)*100:.0f}%)")
     print(f"Blocked: {len(blocks)} ({len(blocks)/max(total,1)*100:.0f}%)")
     print(f"Resumes: {len(resumes)}")
     print(f"Team spawns: {len(teams)}")
-    print(f"\nTop agent types:")
+    print("\nTop agent types:")
     for t, c in Counter(e.get("type", "?") for e in allows).most_common(5):
         print(f"  {t}: {c}")
-    print(f"\nBlock reasons:")
+    print("\nBlock reasons:")
     for r, c in Counter(e.get("reason", "?") for e in blocks).most_common(5):
         print(f"  {r}: {c}")
 
     # Necessity pattern breakdown (feedback loop for tuning)
     necessity_blocks = [e for e in blocks if e.get("reason") == "necessity_check"]
     if necessity_blocks:
-        print(f"\nNecessity patterns triggered:")
+        print("\nNecessity patterns triggered:")
         for p, c in Counter(e.get("pattern", "?") for e in necessity_blocks).most_common(10):
             print(f"  {p}: {c}")
 
@@ -668,7 +668,7 @@ def report() -> None:
     savings_cost = savings_input + savings_output
     savings_tokens = len(blocks) * (EST_INPUT_PER_AGENT + EST_OUTPUT_PER_AGENT)
 
-    print(f"\nEstimated impact:")
+    print("\nEstimated impact:")
     print(f"  Tokens used by agents: ~{est_tokens:,}")
     print(f"  Tokens SAVED by blocks: ~{savings_tokens:,}")
     print(f"  Est. cost (agents): ~${est_cost:.2f}")
@@ -685,7 +685,7 @@ def report() -> None:
             real_output = sum(m.get("output_tokens", 0) for m in completed)
             real_cache = sum(m.get("cache_read_tokens", 0) for m in completed)
             real_cost = sum(m.get("cost_usd", 0) for m in completed)
-            print(f"\nReal metrics (from transcript parsing):")
+            print("\nReal metrics (from transcript parsing):")
             print(f"  Agents metered: {len(completed)}")
             print(f"  Input tokens: {real_input:,}")
             print(f"  Output tokens: {real_output:,}")
@@ -731,7 +731,7 @@ def usage() -> None:
     reason_counts = Counter(e.get("reason", "?") for e in blocks).most_common(3)
 
     print(f"\n{'='*40}")
-    print(f"  YOUR TOKEN GUARD USAGE")
+    print("  YOUR TOKEN GUARD USAGE")
     print(f"{'='*40}")
     print(f"Active since: {active_since}")
     print(f"Sessions tracked: {sessions}")
@@ -740,11 +740,11 @@ def usage() -> None:
     print(f"Estimated tokens saved: ~{saved_tokens:,}")
     print(f"Estimated cost saved: ~${saved_cost:.2f}")
     if reason_counts:
-        print(f"Top block reasons:")
+        print("Top block reasons:")
         for reason, count in reason_counts:
             print(f"  {reason}: {count}")
     print(f"{'='*40}")
-    print(f"\nShare this as a testimonial:")
+    print("\nShare this as a testimonial:")
     print(f'"Token Guard saved me ~${saved_cost:.2f} across {sessions} sessions '
           f'by blocking {len(blocks)} wasteful agent spawns."')
     print()

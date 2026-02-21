@@ -10,7 +10,6 @@ Tests that token-guard.py and read-efficiency-guard.py work together correctly:
 import json
 import os
 import subprocess
-import time
 
 import pytest
 

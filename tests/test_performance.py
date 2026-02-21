@@ -25,7 +25,7 @@ except ImportError:
     HAS_BENCHMARK = False
 
 # Modules are registered in sys.modules by conftest.py's dynamic loader
-import token_guard
+import token_guard  # noqa: E402
 
 
 @pytest.fixture
