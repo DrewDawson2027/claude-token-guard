@@ -1,20 +1,19 @@
-# Claude Token Guard
-
-**Stop Claude Code from burning your API budget.**
-Mechanical enforcement, not suggestions. `sys.exit(2)` can't be rationalized.
+<div align="center">
+  <img src="assets/banner.svg" alt="Claude Token Guard" width="900"/>
+</div>
 
 <p align="center">
   <a href="https://github.com/DrewDawson2027/claude-token-guard/actions/workflows/ci.yml"><img src="https://github.com/DrewDawson2027/claude-token-guard/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="#"><img src="https://img.shields.io/badge/python-3.8%2B-blue" alt="Python"></a>
+  <a href="#quick-start"><img src="https://img.shields.io/badge/python-3.8%2B-blue" alt="Python"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License"></a>
-  <a href="#"><img src="https://img.shields.io/badge/dependencies-zero-orange" alt="Dependencies"></a>
-  <a href="#"><img src="https://img.shields.io/badge/Claude%20Code-compatible-purple" alt="Claude Code"></a>
+  <a href="#quick-start"><img src="https://img.shields.io/badge/dependencies-zero-orange" alt="Zero Dependencies"></a>
+  <a href="#hook-registration"><img src="https://img.shields.io/badge/Claude%20Code-compatible-purple" alt="Claude Code"></a>
   <a href="CONTRIBUTING.md"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen" alt="PRs Welcome"></a>
 </p>
 
 ---
 
-## The Problem
+## 🔥 The Problem
 
 Every Claude Code user has felt this pain:
 
@@ -23,11 +22,12 @@ Every Claude Code user has felt this pain:
 - Fires off **13 sequential Read calls** one-at-a-time instead of batching them in parallel — **context window bloat compounds every turn**
 - You write rules in `CLAUDE.md` saying "don't do this" — **it rationalizes past them every time**
 
+> [!WARNING]
 > *"This case is different." "The user needs comprehensive coverage." "I should be thorough."*
 >
 > LLMs are world-class rationalizers. Written rules are suggestions. You need enforcement.
 
-## The Solution
+## ⚡ The Solution
 
 **`sys.exit(2)` can't be rationalized.**
 
@@ -50,7 +50,7 @@ Use Grep to search for code patterns directly.
 Agents cost ~50k tokens. Direct tools cost ~2-10k.
 ```
 
-## Demo
+## 🎬 Demo
 
 Here's what happens when Claude tries to waste your tokens:
 
@@ -88,7 +88,7 @@ Exit code: 2 — context window preserved.
 
 The LLM receives these messages as tool errors and adjusts its approach. No rationalization possible.
 
-## Architecture
+## 🏗️ Architecture
 
 Three-layer defense-in-depth — the same pattern used in nuclear safety systems, Anthropic's Constitutional AI, and OpenAI's safety pipeline:
 
@@ -115,7 +115,7 @@ Tool Call
 | Self-Healing | `self-heal.py` | Validates and repairs the system on every session start |
 | Shared Infrastructure | `hook_utils.py` | Portable locking, atomic writes, audit logging |
 
-## Quick Start
+## 🚀 Quick Start
 
 ```bash
 # 1. Clone
@@ -136,7 +136,10 @@ cd claude-token-guard && python3 -m pytest tests/ -v
 
 **That's it.** Zero dependencies. Pure Python standard library.
 
-## What It Catches
+> [!TIP]
+> Run `python3 -m pytest tests/ -v` to verify everything is working after setup. All 96 tests should pass.
+
+## 🛡️ What It Catches
 
 | Pattern | What Happens | Tokens Saved |
 |---------|-------------|-------------|
@@ -149,7 +152,7 @@ cd claude-token-guard && python3 -m pytest tests/ -v
 | Agent in Explore'd directory | **WARNED** — "Already mapped by Explore." | Advisory |
 | Opus model requested for agent | **WARNED** — "Opus costs ~3x more." | Advisory |
 
-## Configuration
+## ⚙️ Configuration
 
 Edit `~/.claude/hooks/token-guard-config.json`:
 
@@ -205,7 +208,7 @@ Add to your `~/.claude/settings.json`:
 }
 ```
 
-## The 7 Enforcement Rules
+## 📋 The 7 Enforcement Rules
 
 1. **One-per-session types** — Explore, Plan, deep-researcher: max 1, ever
 2. **General type cap** — max N of any single subagent_type (default 1)
@@ -217,7 +220,7 @@ Add to your `~/.claude/settings.json`:
 
 **Plus:** Resume detection (always allows continuing existing agents), team awareness (bypasses rules for team spawns but counts toward cap), first-spawn advisory, and model cost warnings.
 
-## Analytics
+## 📊 Analytics
 
 ```bash
 python3 ~/.claude/hooks/token-guard.py --report
@@ -252,7 +255,7 @@ Unique sessions: 8
 ========================================
 ```
 
-## Test Suite
+## 🧪 Test Suite
 
 **96 tests. Zero known bugs. Zero dependencies.**
 
@@ -269,7 +272,7 @@ python3 -m pytest tests/ -v   # Run the full suite
 
 CI runs on every push: Python 3.8 / 3.10 / 3.12 × Ubuntu / macOS = **6 matrix jobs**.
 
-## Before / After
+## 📈 Before / After
 
 | Metric | Without Guard | With Guard |
 |--------|:------------:|:----------:|
@@ -281,7 +284,7 @@ CI runs on every push: Python 3.8 / 3.10 / 3.12 × Ubuntu / macOS = **6 matrix j
 
 *Based on real usage data from the audit log across 63 agent spawn attempts.*
 
-## vs Alternatives
+## 🆚 vs Alternatives
 
 | Feature | Claude Token Guard | CLAUDE.md Rules | claude-code-guardrails | Manual Monitoring |
 |---------|:------------------:|:---------------:|:---------------------:|:-----------------:|
@@ -294,7 +297,7 @@ CI runs on every push: Python 3.8 / 3.10 / 3.12 × Ubuntu / macOS = **6 matrix j
 | Test suite | **96 tests** | N/A | None published | N/A |
 | Setup time | 2 minutes | 0 | 5 minutes | Ongoing |
 
-## How It Works Under the Hood
+## 🔬 How It Works Under the Hood
 
 ### Atomic State Management
 All state writes use `tempfile.mkstemp()` + `os.replace()` — if the process crashes mid-write, the original file is untouched. Portable across macOS, Linux, and Windows.
@@ -303,7 +306,8 @@ All state writes use `tempfile.mkstemp()` + `os.replace()` — if the process cr
 Shared state is protected by exclusive file locks (`fcntl.flock` on Unix, `msvcrt.locking` on Windows). No race conditions from concurrent hooks.
 
 ### Fail-Open Philosophy
-If anything goes wrong (can't create state dir, can't parse input, can't acquire lock), the hook exits 0 and **allows the tool call**. False negatives are better than false positives — a bug in the guard should never block legitimate work.
+> [!NOTE]
+> If anything goes wrong (can't create state dir, can't parse input, can't acquire lock), the hook exits 0 and **allows the tool call**. False negatives are better than false positives — a bug in the guard should never block legitimate work.
 
 ### Bounded Growth
 Every array has a TTL:
@@ -312,7 +316,7 @@ Every array has a TTL:
 - Session state files: 24 hours
 - Audit log: rotated at 10K lines
 
-## FAQ
+## ❓ FAQ
 
 **Q: Will this break my Claude Code sessions?**
 A: No. Every hook follows the fail-open principle. If anything goes wrong, it allows the tool call. The guard can only *block*, never *crash*.
@@ -332,7 +336,7 @@ A: Edit `max_agents` in `~/.claude/hooks/token-guard-config.json`. The default o
 **Q: Does this add latency?**
 A: ~10-20ms per tool call. Negligible compared to the API round-trip.
 
-## Contributing
+## 🤝 Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). PRs welcome, especially:
 - New necessity scoring patterns (with tests)
@@ -340,14 +344,14 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). PRs welcome, especially:
 - Windows/Linux testing
 - Documentation improvements
 
-## License
+## 📄 License
 
 [MIT](LICENSE) — use it however you want.
 
 ---
 
 <p align="center">
-  <strong>If this saved you money, <a href="https://github.com/DrewDawson2027/claude-token-guard">star the repo</a>.</strong>
-  <br>
-  Built with frustration, tested with rigor.
+  <strong>⭐ If this saved you money, <a href="https://github.com/DrewDawson2027/claude-token-guard">star the repo</a>.</strong>
+  <br><br>
+  <sub>Built with frustration. Tested with rigor. Zero dependencies.</sub>
 </p>
