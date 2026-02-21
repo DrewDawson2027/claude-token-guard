@@ -97,7 +97,7 @@ class TestDuplicateFileBlocking:
 
 
 class TestSequentialReads:
-    """Test sequential read detection (warn at 4, block at 10)."""
+    """Test sequential read detection (warn at 4, block at 15)."""
 
     def test_no_warn_under_threshold(self, isolated_env):
         """3 reads in 90s should NOT trigger a warning (threshold is 4)."""
@@ -131,7 +131,7 @@ class TestSequentialReads:
 
 
 class TestSequentialReadEscalation:
-    """Test sequential read escalation (warn at 4, block at 10)."""
+    """Test sequential read escalation (warn at 4, block at 15)."""
 
     def test_read_sequential_warns(self, isolated_env):
         """4 reads in 90s -> exit 0 + stderr warning."""
@@ -150,29 +150,29 @@ class TestSequentialReadEscalation:
         assert "sequential" in stderr.lower()
 
     def test_read_sequential_escalation(self, isolated_env):
-        """10 reads in 90s -> 10th blocked (exit 2)."""
+        """15 reads in 120s -> 15th blocked (exit 2)."""
         env, _ = isolated_env
         sid = "seq-esc"
 
-        # First 9 reads — all allowed
-        for i in range(9):
+        # First 14 reads — all allowed
+        for i in range(14):
             code, _, _ = run_guard(make_read_input(f"/file{i}.py", sid), env=env)
             assert code == 0
 
-        # 10th read — BLOCKED
-        code, _, stderr = run_guard(make_read_input("/file9.py", sid), env=env)
+        # 15th read — BLOCKED
+        code, _, stderr = run_guard(make_read_input("/file14.py", sid), env=env)
         assert code == 2
         assert "BLOCKED" in stderr
         assert "sequential" in stderr.lower()
 
     def test_sequential_resets_after_window(self, isolated_env):
-        """Sequential count should reset after the 90s window."""
+        """Sequential count should reset after the 120s window."""
         env, state_dir = isolated_env
         sid = "seq-reset"
 
-        # Manually create state with old reads (>90s ago)
+        # Manually create state with old reads (>120s ago)
         state_file = state_dir / f"{sid}-reads.json"
-        old_time = time.time() - 120  # 2 minutes ago
+        old_time = time.time() - 180  # 3 minutes ago
         state = {
             "reads": [
                 {"path": f"/file{i}.py", "timestamp": old_time}
@@ -199,25 +199,25 @@ class TestEscalationNoFreePass:
         env, state_dir = isolated_env
         sid = "no-free-pass"
 
-        # Create state with 9 recent reads (just under the threshold of 10)
+        # Create state with 14 recent reads (just under the threshold of 15)
         state_file = state_dir / f"{sid}-reads.json"
         now = time.time()
         state = {
             "reads": [
                 {"path": f"/file{i}.py", "timestamp": now - 5}
-                for i in range(9)
+                for i in range(14)
             ],
             "last_sequential_warn": now - 5,
         }
         state_file.write_text(json.dumps(state))
 
-        # 10th read — should be blocked
-        code, _, stderr = run_guard(make_read_input("/file9.py", sid), env=env)
+        # 15th read — should be blocked
+        code, _, stderr = run_guard(make_read_input("/file14.py", sid), env=env)
         assert code == 2
         assert "BLOCKED" in stderr
 
-        # 11th read — should ALSO be blocked (no free pass)
-        code, _, stderr = run_guard(make_read_input("/file10.py", sid), env=env)
+        # 16th read — should ALSO be blocked (no free pass)
+        code, _, stderr = run_guard(make_read_input("/file15.py", sid), env=env)
         assert code == 2
         assert "BLOCKED" in stderr
 
@@ -362,26 +362,26 @@ class TestStdinProtection:
 
 
 class TestBlockBehavior:
-    """Verify the hook blocks at escalation threshold (10+ reads in 90s)."""
+    """Verify the hook blocks at escalation threshold (15+ reads in 120s)."""
 
     def test_allows_under_escalation(self, isolated_env):
         """The read guard should allow reads below the escalation threshold."""
         env, _ = isolated_env
         sid = "under-esc"
-        for i in range(9):
+        for i in range(14):
             code, _, _ = run_guard(make_read_input(f"/file{i}.py", sid), env=env)
             assert code == 0, f"Read guard should allow under threshold (iteration {i})"
 
     def test_blocks_at_escalation(self, isolated_env):
-        """The read guard should block at escalation threshold (10+ reads in 90s)."""
+        """The read guard should block at escalation threshold (15+ reads in 120s)."""
         env, _ = isolated_env
         sid = "at-esc"
-        for i in range(9):
+        for i in range(14):
             code, _, _ = run_guard(make_read_input(f"/file{i}.py", sid), env=env)
             assert code == 0
-        # 10th read should be blocked
-        code, _, stderr = run_guard(make_read_input("/file9.py", sid), env=env)
-        assert code == 2, "10th sequential read should be blocked"
+        # 15th read should be blocked
+        code, _, stderr = run_guard(make_read_input("/file14.py", sid), env=env)
+        assert code == 2, "15th sequential read should be blocked"
         assert "BLOCKED" in stderr
 
 

@@ -81,8 +81,8 @@ Runs as a PreToolUse hook on every `Read` tool call. Three checks:
 | Check | Threshold | Action |
 |-------|-----------|--------|
 | Duplicate file | 3+ reads of same path | Block |
-| Sequential reads | 4 in 90s | Warn |
-| Sequential reads | 10 in 90s | Block |
+| Sequential reads | 4 in 120s | Warn |
+| Sequential reads | 15 in 120s | Block |
 | Post-Explore overlap | File in Explore'd dir | Warn (advisory) |
 
 **Escalation is unconditional.** Time-based suppression applies only to warnings (to avoid spam), never to blocks. This was a bug that was fixed — the original code had a 60-second "free pass" after each block.

@@ -13,7 +13,7 @@ How it works:
 
 Checks:
   1. Duplicate file: BLOCK at 3+ reads of the same file path
-  2. Sequential reads: WARN at 4, BLOCK at 10 reads within 90s window
+  2. Sequential reads: WARN at 4, BLOCK at 15 reads within 120s window
   3. Post-Explore duplicates: Advisory warning (non-blocking)
 
 State:  ~/.claude/hooks/session-state/{session_id}-reads.json
@@ -33,9 +33,9 @@ from hook_utils import lock, unlock, load_json_state, save_json_state
 STATE_DIR = os.environ.get("TOKEN_GUARD_STATE_DIR", os.path.expanduser("~/.claude/hooks/session-state"))
 
 SEQUENTIAL_THRESHOLD = 4    # Warn after this many sequential reads
-ESCALATION_THRESHOLD = 10   # Block after this many sequential reads
+ESCALATION_THRESHOLD = 15   # Block after this many sequential reads (raised: 10 was too aggressive)
 DUPLICATE_FILE_LIMIT = 3    # Block same file after this many reads
-SEQUENTIAL_WINDOW = 90      # Seconds window for sequential detection
+SEQUENTIAL_WINDOW = 120     # Seconds window for sequential detection (raised: 90s too tight for analysis)
 READ_TTL = 300              # Prune read records older than 5 minutes
 
 
