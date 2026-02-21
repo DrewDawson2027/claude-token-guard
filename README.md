@@ -1,16 +1,7 @@
-<p align="center">
-<pre align="center">
-   _____ _                 _        _____     _                  ____                     _
-  / ____| |               | |      |_   _|   | |                / ___|_   _  __ _ _ __ __| |
- | |    | | __ _ _   _  __| | ___    | | ___ | | _____ _ __    | |  _| | | |/ _` | '__/ _` |
- | |    | |/ _` | | | |/ _` |/ _ \   | |/ _ \| |/ / _ \ '_ \  | |_| | |_| | (_| | | | (_| |
- | |____| | (_| | |_| | (_| |  __/   | | (_) |   <  __/ | | |  \____|\__,_|\__,_|_|  \__,_|
-  \_____|_|\__,_|\__,_|\__,_|\___|   |_|\___/|_|\_\___|_| |_|
-</pre>
-</p>
+# Claude Token Guard
 
-<h3 align="center">Stop Claude Code from burning your API budget.</h3>
-<p align="center">Mechanical enforcement, not suggestions. <code>sys.exit(2)</code> can't be rationalized.</p>
+**Stop Claude Code from burning your API budget.**
+Mechanical enforcement, not suggestions. `sys.exit(2)` can't be rationalized.
 
 <p align="center">
   <a href="https://github.com/DrewDawson2027/claude-token-guard/actions/workflows/ci.yml"><img src="https://github.com/DrewDawson2027/claude-token-guard/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -64,20 +55,19 @@ Agents cost ~50k tokens. Direct tools cost ~2-10k.
 
 Three-layer defense-in-depth — the same pattern used in nuclear safety systems, Anthropic's Constitutional AI, and OpenAI's safety pipeline:
 
-```mermaid
-flowchart LR
-    A[Tool Call] --> B{Layer 1\nAdvisory}
-    B -->|Reminder| C{Layer 2\ntoken-guard.py}
-    C -->|BLOCK| D[Exit 2\nTool Cancelled]
-    C -->|Allow| E{Layer 3\nread-guard.py}
-    E -->|BLOCK| D
-    E -->|Allow| F[Tool Executes]
-    C -->|Log| G[(audit.jsonl)]
-    E -->|Log| G
-
-    style D fill:#ff4444,color:#fff
-    style F fill:#44bb44,color:#fff
-    style G fill:#4488ff,color:#fff
+```
+Tool Call
+  │
+  ├─► Layer 1: Advisory (settings.json prompt hook)
+  │       └─ Reminds the AI of token rules before every Task call
+  │
+  ├─► Layer 2: token-guard.py  ──── BLOCK ──► Exit 2 (Tool Cancelled)
+  │       └─ Hard-blocks agent spawns (7 rules + anti-evasion)
+  │
+  ├─► Layer 3: read-efficiency-guard.py  ──── BLOCK ──► Exit 2 (Tool Cancelled)
+  │       └─ Hard-blocks duplicate/sequential reads
+  │
+  └─► Tool Executes  ──── Log ──► audit.jsonl
 ```
 
 | Layer | File | What It Does |
