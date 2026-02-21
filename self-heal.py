@@ -58,6 +58,54 @@ REQUIRED_HOOKS = {
 AUDIT_MAX_LINES = 10000
 STALE_LOCK_SECONDS = 300  # 5 minutes
 
+MASTER_AGENTS_DIR = os.path.expanduser("~/.claude/master-agents")
+
+# Mode files referenced by master agents — validated on session start
+EXPECTED_MODE_FILES = {
+    "coder": ["build-mode.md", "debug-mode.md", "review-mode.md", "refactor-mode.md", "atlas-mode.md"],
+    "researcher": ["academic-mode.md", "market-mode.md", "technical-mode.md", "general-mode.md"],
+    "architect": ["database-design.md", "api-design.md", "system-design.md", "frontend-design.md"],
+    "workflow": ["gsd-exec.md", "feature-workflow.md", "git-workflow.md", "autonomous.md"],
+}
+
+
+def phase_mode_validation():
+    """Phase 4b: Validate all mode files referenced by master agents exist."""
+    checks = 0
+    repairs = 0
+    actions = []
+
+    if not os.path.isdir(MASTER_AGENTS_DIR):
+        return checks, repairs, actions
+
+    for agent, modes in EXPECTED_MODE_FILES.items():
+        agent_dir = os.path.join(MASTER_AGENTS_DIR, agent)
+        for mode_file in modes:
+            checks += 1
+            mode_path = os.path.join(agent_dir, mode_file)
+            if not os.path.isfile(mode_path):
+                actions.append(f"MISSING MODE: {agent}/{mode_file}")
+                repairs += 1
+                print(
+                    f"WARNING: Mode file missing: {agent}/{mode_file}. "
+                    f"Agent will fall back to default mode.",
+                    file=sys.stderr,
+                )
+
+    # Also validate ref card directories exist
+    for agent in EXPECTED_MODE_FILES:
+        refs_dir = os.path.join(MASTER_AGENTS_DIR, agent, "refs")
+        checks += 1
+        if os.path.isdir(os.path.join(MASTER_AGENTS_DIR, agent)) and not os.path.isdir(refs_dir):
+            try:
+                os.makedirs(refs_dir, exist_ok=True)
+                actions.append(f"created refs dir: {agent}/refs/")
+                repairs += 1
+            except OSError:
+                pass
+
+    return checks, repairs, actions
+
 
 def main():
     # NOTE: DEFAULT_CONFIG is imported from hook_utils with fallback (see top of file).
@@ -86,6 +134,12 @@ def main():
 
     # Phase 4: Auto-repair (permissions, missing dirs)
     c, r, a = phase_auto_repair()
+    checks += c
+    repairs += r
+    actions.extend(a)
+
+    # Phase 4b: Master agent mode file validation
+    c, r, a = phase_mode_validation()
     checks += c
     repairs += r
     actions.extend(a)

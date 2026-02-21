@@ -66,6 +66,22 @@ if [ "$LINES" -gt 200 ]; then
   mv ~/.claude/terminals/sessions.tmp ~/.claude/terminals/sessions.jsonl
 fi
 
+# Bootstrap session cache for cross-agent context sharing
+CACHE_DIR="$HOME/.claude/session-cache"
+mkdir -p "$CACHE_DIR"
+
+# Create cache files if they don't exist (agents read/write these)
+for f in coder-context.md research-cache.md design-decisions.md; do
+  if [ ! -f "$CACHE_DIR/$f" ]; then
+    echo "# Session Cache: $f" > "$CACHE_DIR/$f"
+    echo "# Auto-created $(date -u +%Y-%m-%dT%H:%M:%SZ). Agents write findings here for cross-agent reuse." >> "$CACHE_DIR/$f"
+    echo "" >> "$CACHE_DIR/$f"
+  fi
+done
+
+# Clean stale cache entries (older than 24h)
+find "$CACHE_DIR" -name "*.md" -mmin +1440 -exec sh -c 'echo "# Session Cache: $(basename {})" > {}' \; 2>/dev/null
+
 # Fix 1: Set terminal tab title to session ID for wake targeting by coord_wake_session
 printf '\e]0;claude-%s\a' "${SESSION_ID:0:8}"
 

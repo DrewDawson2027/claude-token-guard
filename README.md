@@ -5,7 +5,6 @@ Mechanical enforcement, not suggestions. `sys.exit(2)` can't be rationalized.
 
 <p align="center">
   <a href="https://github.com/DrewDawson2027/claude-token-guard/actions/workflows/ci.yml"><img src="https://github.com/DrewDawson2027/claude-token-guard/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="#"><img src="https://img.shields.io/badge/tests-96%20passed-brightgreen" alt="Tests"></a>
   <a href="#"><img src="https://img.shields.io/badge/python-3.8%2B-blue" alt="Python"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License"></a>
   <a href="#"><img src="https://img.shields.io/badge/dependencies-zero-orange" alt="Dependencies"></a>
@@ -50,6 +49,44 @@ BLOCKED: This task can be handled with direct tools.
 Use Grep to search for code patterns directly.
 Agents cost ~50k tokens. Direct tools cost ~2-10k.
 ```
+
+## Demo
+
+Here's what happens when Claude tries to waste your tokens:
+
+**Attempt: Spawn a 2nd Explore agent**
+```
+$ echo '{"tool_name":"Task","tool_input":{"subagent_type":"Explore",...}}' | python3 token-guard.py
+
+BLOCKED: Already spawned a Explore agent this session. Max 1 per session.
+Merge your queries into one agent, or use Grep/Read/WebSearch directly
+instead of spawning another.
+
+Exit code: 2 — tool call cancelled. No tokens burned.
+```
+
+**Attempt: Use an agent for a task Grep can handle**
+```
+$ echo '{"tool_name":"Task","tool_input":{"prompt":"search for the function handleAuth",...}}' | python3 token-guard.py
+
+BLOCKED: This task can be handled with direct tools.
+Use Grep to search for code patterns directly.
+Agents cost ~50k tokens. Direct tools cost ~2-10k.
+
+Exit code: 2 — $0.50 saved in 10ms.
+```
+
+**Attempt: Read the same file for the 4th time**
+```
+$ echo '{"tool_name":"Read","tool_input":{"file_path":"src/main.py"}}' | python3 read-efficiency-guard.py
+
+BLOCKED: 'main.py' read 4 times already. Trust your first read.
+Use Grep for specific lines.
+
+Exit code: 2 — context window preserved.
+```
+
+The LLM receives these messages as tool errors and adjusts its approach. No rationalization possible.
 
 ## Architecture
 
@@ -106,7 +143,7 @@ cd claude-token-guard && python3 -m pytest tests/ -v
 | 2nd Explore agent in same session | **BLOCKED** — "Max 1 per session. Merge queries." | ~50,000 |
 | "Search for function X" as agent task | **BLOCKED** — "Use Grep directly." | ~48,000 |
 | Same file read 3+ times | **BLOCKED** — "Trust your first read." | ~5,000/read |
-| 10+ sequential reads in 90s | **BLOCKED** — "Batch into parallel groups." | ~20,000+ |
+| 15+ sequential reads in 120s | **BLOCKED** — "Batch into parallel groups." | ~20,000+ |
 | Type-switching evasion (Explore blocked → tries general-purpose) | **BLOCKED** — "Resembles a previously blocked attempt." | ~50,000 |
 | Rapid-fire agent spawns (<5s apart) | **BLOCKED** — "Wait between spawns." | ~50,000 |
 | Agent in Explore'd directory | **WARNED** — "Already mapped by Explore." | Advisory |
@@ -229,6 +266,8 @@ tests/test_self_heal.py             — 12 tests (all 5 repair phases, audit rot
 ```bash
 python3 -m pytest tests/ -v   # Run the full suite
 ```
+
+CI runs on every push: Python 3.8 / 3.10 / 3.12 × Ubuntu / macOS = **6 matrix jobs**.
 
 ## Before / After
 

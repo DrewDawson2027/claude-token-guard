@@ -378,8 +378,10 @@ def main():
                 block(reason)
 
             # RULE 7: Global cooldown — prevent rapid-fire spawns of any type
-            if state["agents"]:
-                last_any = max(a["timestamp"] for a in state["agents"])
+            # Skip cooldown for non-team agents only (team spawns exempt — they need fast setup)
+            non_team_agents = [a for a in state["agents"] if not a.get("team")]
+            if non_team_agents:
+                last_any = max(a["timestamp"] for a in non_team_agents)
                 elapsed = now - last_any
                 if elapsed < global_cooldown:
                     reason = (
@@ -508,6 +510,29 @@ def report():
         print(f"\nNecessity patterns triggered:")
         for p, c in Counter(e.get("pattern", "?") for e in necessity_blocks).most_common(10):
             print(f"  {p}: {c}")
+
+    # Estimated token cost (heuristic: ~50k per allow, ~0 per block)
+    TOKEN_COST_PER_AGENT = 50000
+    SONNET_COST_PER_1K_INPUT = 0.003  # $3/M input tokens
+    SONNET_COST_PER_1K_OUTPUT = 0.015  # $15/M output tokens
+    est_tokens = len(allows) * TOKEN_COST_PER_AGENT
+    est_cost = est_tokens * (SONNET_COST_PER_1K_INPUT + SONNET_COST_PER_1K_OUTPUT) / 1000
+    savings_tokens = len(blocks) * TOKEN_COST_PER_AGENT
+    savings_cost = savings_tokens * (SONNET_COST_PER_1K_INPUT + SONNET_COST_PER_1K_OUTPUT) / 1000
+
+    print(f"\nEstimated impact:")
+    print(f"  Tokens used by agents: ~{est_tokens:,}")
+    print(f"  Tokens SAVED by blocks: ~{savings_tokens:,}")
+    print(f"  Est. cost (agents): ~${est_cost:.2f}")
+    print(f"  Est. savings (blocks): ~${savings_cost:.2f}")
+    print(f"  Block rate: {len(blocks)/max(total,1)*100:.0f}%")
+
+    # Warn/allow breakdown
+    warns = [e for e in entries if e.get("event") == "warn"]
+    if warns:
+        print(f"\nWarnings (non-blocking): {len(warns)}")
+        for r, c in Counter(e.get("reason", "?") for e in warns).most_common(5):
+            print(f"  {r}: {c}")
 
     print(f"\nUnique sessions: {len(set(e.get('session', '?') for e in entries))}")
     print(f"{'='*40}\n")

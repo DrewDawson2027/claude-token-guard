@@ -7,10 +7,10 @@
   "audit_log": true,
   "one_per_session": [
     "Explore",
-    "deep-researcher",
-    "ssrn-researcher",
-    "competitor-tracker",
-    "gtm-strategist",
+    "master-coder",
+    "master-researcher",
+    "master-architect",
+    "master-workflow",
     "Plan"
   ],
   "always_allowed": [
