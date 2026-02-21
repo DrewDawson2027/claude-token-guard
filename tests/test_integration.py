@@ -14,8 +14,9 @@ import time
 
 import pytest
 
-TOKEN_GUARD = os.path.expanduser("~/.claude/hooks/token-guard.py")
-READ_GUARD = os.path.expanduser("~/.claude/hooks/read-efficiency-guard.py")
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+TOKEN_GUARD = os.path.join(_REPO_ROOT, "token-guard.py")
+READ_GUARD = os.path.join(_REPO_ROOT, "read-efficiency-guard.py")
 
 
 @pytest.fixture
