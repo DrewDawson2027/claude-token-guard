@@ -12,7 +12,7 @@ import time
 
 import pytest
 
-SCRIPT = os.path.expanduser("~/.claude/hooks/token-guard.py")
+SCRIPT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "token-guard.py")
 
 
 @pytest.fixture

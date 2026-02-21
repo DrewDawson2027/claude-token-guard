@@ -11,8 +11,9 @@ import time
 
 import pytest
 
-SCRIPT = os.path.expanduser("~/.claude/hooks/self-heal.py")
-HOOKS_DIR = os.path.expanduser("~/.claude/hooks")
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SCRIPT = os.path.join(_REPO_ROOT, "self-heal.py")
+HOOKS_DIR = _REPO_ROOT
 
 
 @pytest.fixture
@@ -33,6 +34,7 @@ def isolated_env(tmp_path):
     env = os.environ.copy()
     env["TOKEN_GUARD_STATE_DIR"] = str(state_dir)
     env["TOKEN_GUARD_CONFIG_PATH"] = str(config_path)
+    env["TOKEN_GUARD_HOOKS_DIR"] = _REPO_ROOT
     return env, state_dir, config_path
 
 
@@ -317,7 +319,7 @@ class TestAutoRepair:
 
         # Also create the required Python hooks so structural checks pass
         for name in ["token-guard.py", "read-efficiency-guard.py", "hook_utils.py"]:
-            src = os.path.expanduser(f"~/.claude/hooks/{name}")
+            src = os.path.join(_REPO_ROOT, name)
             if os.path.isfile(src):
                 (fake_hooks / name).write_text(open(src).read())
 
