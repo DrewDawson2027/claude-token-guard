@@ -12,7 +12,7 @@ import json
 import os
 import sys
 import tempfile
-from typing import Any, Callable, Dict, IO, List, Optional
+from typing import IO, Callable, Dict, List, Optional
 
 # Portable file locking — fcntl on Unix, msvcrt on Windows
 if sys.platform == "win32":

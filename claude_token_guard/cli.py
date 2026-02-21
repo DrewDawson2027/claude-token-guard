@@ -208,7 +208,7 @@ def cmd_status():
     if installed_ver == __version__:
         print("\nUp to date.")
     else:
-        print(f"\nUpdate available! Run: claude-token-guard install")
+        print("\nUpdate available! Run: claude-token-guard install")
 
 
 def cmd_version():

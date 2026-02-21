@@ -30,7 +30,7 @@ Issues = "https://github.com/DrewDawson2027/claude-token-guard/issues"
 claude-token-guard = "claude_token_guard.cli:main"
 
 [project.optional-dependencies]
-dev = ["pytest", "hypothesis", "pytest-benchmark", "mutmut"]
+dev = ["pytest", "hypothesis", "pytest-benchmark", "mutmut", "ruff"]
 
 [tool.mutmut]
 paths_to_mutate = "token-guard.py:read-efficiency-guard.py:hook_utils.py"
@@ -39,3 +39,11 @@ runner = "python -m pytest tests/ -x -q --benchmark-disable"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py38"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]

@@ -29,7 +29,7 @@ import time
 from typing import Dict, List
 
 # Shared infrastructure — locking, state, atomic writes
-from hook_utils import lock, unlock, load_json_state, save_json_state
+from hook_utils import load_json_state, lock, save_json_state, unlock
 
 STATE_DIR = os.environ.get("TOKEN_GUARD_STATE_DIR", os.path.expanduser("~/.claude/hooks/session-state"))
 

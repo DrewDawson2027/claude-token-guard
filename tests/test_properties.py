@@ -10,13 +10,12 @@ Requires: pip install hypothesis
 
 import json
 import os
-import sys
 import tempfile
 
 import pytest
 
 try:
-    from hypothesis import given, settings, assume, HealthCheck
+    from hypothesis import assume, given, settings
     from hypothesis import strategies as st
     HAS_HYPOTHESIS = True
 except ImportError:
@@ -50,6 +49,7 @@ except ImportError:
 
 # Modules are registered in sys.modules by conftest.py's dynamic loader
 import token_guard
+
 import hook_utils
 
 pytestmark = pytest.mark.skipif(not HAS_HYPOTHESIS, reason="hypothesis not installed")
