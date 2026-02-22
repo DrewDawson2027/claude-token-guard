@@ -10,9 +10,19 @@ Tests that token-guard.py and read-efficiency-guard.py work together correctly:
 import json
 import os
 import subprocess
+import sys
 import time
 
 import pytest
+
+# Add hooks dir to path so we can import normalize helpers
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from guard_normalize import normalize_session_key
+
+
+def sk(session_id: str) -> str:
+    """Compute the normalized session_key for a given session_id (mirrors runtime behavior)."""
+    return normalize_session_key(session_id)
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TOKEN_GUARD = os.path.join(_REPO_ROOT, "token-guard.py")
@@ -89,7 +99,7 @@ class TestCrossHookCoordination:
         assert code == 0
 
         # Verify token-guard saved target_dirs in state
-        state_file = state_dir / f"{sid}.json"
+        state_file = state_dir / f"{sk(sid)}.json"
         with open(state_file, "r") as f:
             state = json.load(f)
         assert len(state["agents"]) == 1
@@ -155,8 +165,8 @@ class TestSharedStateIntegrity:
             }, env=env)
 
         # Verify both state files are valid JSON
-        token_state = state_dir / f"{sid}.json"
-        read_state = state_dir / f"{sid}-reads.json"
+        token_state = state_dir / f"{sk(sid)}.json"
+        read_state = state_dir / f"{sk(sid)}-reads.json"
 
         with open(token_state, "r") as f:
             ts = json.load(f)
@@ -217,7 +227,7 @@ class TestConcurrentExecution:
             assert code in (0, 2), f"Unexpected exit code {code} — hook crashed"
 
         # State file should be valid JSON
-        state_file = state_dir / f"{sid}-reads.json"
+        state_file = state_dir / f"{sk(sid)}-reads.json"
         state = json.loads(state_file.read_text())
         assert "reads" in state
 
@@ -246,6 +256,106 @@ class TestConcurrentExecution:
             assert code in (0, 2), f"Unexpected exit code {code} — hook crashed"
 
         # State file should be valid JSON
-        state_file = state_dir / f"{sid}.json"
+        state_file = state_dir / f"{sk(sid)}.json"
         state = json.loads(state_file.read_text())
         assert "agents" in state
+
+
+class TestConcurrencyStress:
+    """High-concurrency stress tests for JSONL append and state writes."""
+
+    def test_100_parallel_jsonl_appends(self, integrated_env):
+        """100 threads each appending one JSONL line must produce 100 valid lines."""
+        import concurrent.futures
+        import threading
+
+        env, state_dir = integrated_env
+        log_file = state_dir / "stress-test.jsonl"
+
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        import hook_utils
+
+        errors = []
+
+        def do_append(i):
+            try:
+                entry = json.dumps({"thread": i, "data": f"entry-{i}"}) + "\n"
+                success = hook_utils.locked_append(str(log_file), entry)
+                if not success:
+                    errors.append(f"Thread {i} failed to append")
+            except Exception as e:
+                errors.append(f"Thread {i} raised: {e}")
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+            futures = [executor.submit(do_append, i) for i in range(100)]
+            concurrent.futures.wait(futures)
+
+        assert not errors, f"Append errors: {errors}"
+
+        # Verify all 100 lines are present and valid JSON
+        lines = log_file.read_text().strip().split("\n")
+        assert len(lines) == 100, f"Expected 100 lines, got {len(lines)}"
+        thread_ids = set()
+        for line in lines:
+            entry = json.loads(line)  # Should not raise
+            thread_ids.add(entry["thread"])
+        assert len(thread_ids) == 100, f"Expected 100 unique threads, got {len(thread_ids)}"
+
+    def test_50_parallel_state_writes(self, integrated_env):
+        """50 threads each writing state must produce a valid final file."""
+        import concurrent.futures
+
+        env, state_dir = integrated_env
+        state_file = state_dir / "stress-state.json"
+
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        import hook_utils
+
+        def do_write(i):
+            state = {"writer": i, "data": f"value-{i}"}
+            hook_utils.save_json_state(str(state_file), state)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            futures = [executor.submit(do_write, i) for i in range(50)]
+            concurrent.futures.wait(futures)
+
+        # Final file must be valid JSON
+        final = json.loads(state_file.read_text())
+        assert "writer" in final
+        assert "data" in final
+
+    def test_concurrent_read_and_write(self, integrated_env):
+        """Concurrent readers and writers must not produce partial reads."""
+        import concurrent.futures
+
+        env, state_dir = integrated_env
+        state_file = state_dir / "rw-stress.json"
+
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        import hook_utils
+
+        # Seed the file
+        hook_utils.save_json_state(str(state_file), {"seed": True})
+
+        read_errors = []
+
+        def do_write(i):
+            state = {"writer": i, "iteration": i}
+            hook_utils.save_json_state(str(state_file), state)
+
+        def do_read(i):
+            try:
+                state = hook_utils.load_json_state(str(state_file))
+                # Must always be a valid dict
+                assert isinstance(state, dict), f"Read {i} got non-dict: {type(state)}"
+            except Exception as e:
+                read_errors.append(f"Read {i} failed: {e}")
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            futures = []
+            for i in range(30):
+                futures.append(executor.submit(do_write, i))
+                futures.append(executor.submit(do_read, i))
+            concurrent.futures.wait(futures)
+
+        assert not read_errors, f"Read errors during concurrent access: {read_errors}"

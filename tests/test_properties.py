@@ -279,3 +279,265 @@ class TestLockedAppendProperties:
                 os.unlink(path + ".lock")
             except OSError:
                 pass
+
+
+# ============================================================
+# Malformed payload fuzz tests (Phase 9.1)
+# ============================================================
+
+import subprocess
+
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+TOKEN_GUARD_SCRIPT = os.path.join(_REPO_ROOT, "token-guard.py")
+READ_GUARD_SCRIPT = os.path.join(_REPO_ROOT, "read-efficiency-guard.py")
+
+
+def _make_fuzz_env(tmp_dir):
+    """Create isolated environment for fuzz tests (helper, not fixture)."""
+    state_dir = os.path.join(tmp_dir, "state")
+    os.makedirs(state_dir, exist_ok=True)
+    config_path = os.path.join(tmp_dir, "config.json")
+    with open(config_path, "w") as f:
+        json.dump({
+            "schema_version": 2, "max_agents": 5, "parallel_window_seconds": 30,
+            "global_cooldown_seconds": 0, "max_per_subagent_type": 5,
+            "state_ttl_hours": 24, "audit_log": False,
+            "failure_mode": "fail_open", "sanitize_session_ids": True,
+            "normalize_paths": True, "fault_audit": False,
+            "max_string_field_length": 512, "metrics_correlation_window_seconds": 15,
+            "one_per_session": ["Explore"], "always_allowed": ["claude-code-guide"],
+        }, f)
+    env = os.environ.copy()
+    env["TOKEN_GUARD_STATE_DIR"] = state_dir
+    env["TOKEN_GUARD_CONFIG_PATH"] = config_path
+    return env
+
+
+class TestMalformedPayloads:
+    """Fuzz hooks with arbitrary JSON — must never exit 1 (crash)."""
+
+    @given(st.dictionaries(
+        keys=st.text(min_size=1, max_size=20),
+        values=st.one_of(st.integers(), st.text(max_size=50), st.booleans(), st.none()),
+        max_size=8,
+    ))
+    @settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
+    def test_token_guard_survives_any_json(self, payload):
+        """token-guard must exit 0 or 2, never 1, for any JSON dict."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            env = _make_fuzz_env(tmp_dir)
+            result = subprocess.run(
+                ["python3", TOKEN_GUARD_SCRIPT],
+                input=json.dumps(payload), capture_output=True, text=True,
+                env=env, timeout=10,
+            )
+            assert result.returncode in (0, 2), (
+                f"token-guard crashed (exit {result.returncode}) on: {payload}\nstderr: {result.stderr}"
+            )
+
+    @given(st.dictionaries(
+        keys=st.text(min_size=1, max_size=20),
+        values=st.one_of(st.integers(), st.text(max_size=50), st.booleans(), st.none()),
+        max_size=8,
+    ))
+    @settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
+    def test_read_guard_survives_any_json(self, payload):
+        """read-guard must exit 0 or 2, never 1, for any JSON dict."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            env = _make_fuzz_env(tmp_dir)
+            result = subprocess.run(
+                ["python3", READ_GUARD_SCRIPT],
+                input=json.dumps(payload), capture_output=True, text=True,
+                env=env, timeout=10,
+            )
+            assert result.returncode in (0, 2), (
+                f"read-guard crashed (exit {result.returncode}) on: {payload}\nstderr: {result.stderr}"
+            )
+
+    def test_token_guard_survives_non_json(self):
+        """token-guard must exit 0 on non-JSON input."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            env = _make_fuzz_env(tmp_dir)
+            for bad_input in ["", "not json", "{{{", "null", "[]", "123"]:
+                result = subprocess.run(
+                    ["python3", TOKEN_GUARD_SCRIPT],
+                    input=bad_input, capture_output=True, text=True,
+                    env=env, timeout=10,
+                )
+                assert result.returncode == 0, (
+                    f"token-guard crashed on non-JSON: {bad_input!r}"
+                )
+
+    def test_read_guard_survives_non_json(self):
+        """read-guard must exit 0 on non-JSON input."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            env = _make_fuzz_env(tmp_dir)
+            for bad_input in ["", "not json", "{{{", "null", "[]"]:
+                result = subprocess.run(
+                    ["python3", READ_GUARD_SCRIPT],
+                    input=bad_input, capture_output=True, text=True,
+                    env=env, timeout=10,
+                )
+                assert result.returncode == 0, (
+                    f"read-guard crashed on non-JSON: {bad_input!r}"
+                )
+
+
+# ============================================================
+# Normalization fuzz tests
+# ============================================================
+
+# Import normalization modules
+sys.path.insert(0, _REPO_ROOT)
+try:
+    from guard_normalize import normalize_session_key, normalize_hook_payload, normalize_file_path
+    from guard_contracts import build_audit_entry, build_metrics_lifecycle_entry, build_metrics_usage_entry
+    HAS_NORMALIZE = True
+except ImportError:
+    HAS_NORMALIZE = False
+
+
+@pytest.mark.skipif(not HAS_NORMALIZE, reason="guard_normalize not importable")
+class TestNormalizationFuzz:
+    """Fuzz normalization functions — must never crash."""
+
+    @given(st.text(min_size=0, max_size=200))
+    @settings(max_examples=100)
+    def test_normalize_session_key_never_crashes(self, session_id):
+        """normalize_session_key must return a string for any input."""
+        result = normalize_session_key(session_id)
+        assert isinstance(result, str)
+        assert len(result) <= 16
+
+    @given(st.dictionaries(
+        keys=st.text(min_size=1, max_size=30),
+        values=st.one_of(st.text(max_size=100), st.integers(), st.none()),
+        max_size=10,
+    ))
+    @settings(max_examples=100)
+    def test_normalize_hook_payload_never_crashes(self, data):
+        """normalize_hook_payload must return a dict for any dict input."""
+        result = normalize_hook_payload(data)
+        assert isinstance(result, dict)
+
+    @given(st.text(min_size=0, max_size=200))
+    @settings(max_examples=100)
+    def test_normalize_file_path_never_crashes(self, path):
+        """normalize_file_path must return a string for any input."""
+        result = normalize_file_path(path)
+        assert isinstance(result, str)
+
+
+@pytest.mark.skipif(not HAS_NORMALIZE, reason="guard_contracts not importable")
+class TestContractBuilderFuzz:
+    """Fuzz contract builders — must never crash."""
+
+    @given(
+        st.text(min_size=0, max_size=50),
+        st.text(min_size=0, max_size=50),
+        st.text(min_size=0, max_size=100),
+        st.text(min_size=0, max_size=50),
+    )
+    @settings(max_examples=100)
+    def test_build_audit_entry_never_crashes(self, event_type, subagent_type, description, session_id):
+        """build_audit_entry must return a dict for any string inputs."""
+        result = build_audit_entry(
+            event_type=event_type,
+            subagent_type=subagent_type,
+            description=description,
+            session_id=session_id,
+        )
+        assert isinstance(result, dict)
+        assert "schema_version" in result
+        assert result["schema_version"] == 2
+
+    @given(
+        st.text(min_size=0, max_size=50),
+        st.text(min_size=0, max_size=50),
+        st.text(min_size=0, max_size=50),
+        st.text(min_size=0, max_size=50),
+    )
+    @settings(max_examples=50)
+    def test_build_metrics_lifecycle_never_crashes(self, event, agent_type, agent_id, session_id):
+        """build_metrics_lifecycle_entry must return a dict."""
+        result = build_metrics_lifecycle_entry(
+            event=event, agent_type=agent_type,
+            agent_id=agent_id, session_id=session_id,
+        )
+        assert isinstance(result, dict)
+
+    @given(
+        st.text(min_size=0, max_size=50),
+        st.text(min_size=0, max_size=50),
+        st.text(min_size=0, max_size=50),
+        st.integers(min_value=0, max_value=1000000),
+        st.integers(min_value=0, max_value=1000000),
+    )
+    @settings(max_examples=50)
+    def test_build_metrics_usage_never_crashes(self, agent_type, agent_id, session_id, input_tok, output_tok):
+        """build_metrics_usage_entry must return a dict."""
+        totals = {"input_tokens": input_tok, "output_tokens": output_tok}
+        result = build_metrics_usage_entry(
+            agent_type=agent_type, agent_id=agent_id,
+            session_id=session_id,
+            totals=totals, cost_usd=0.0,
+        )
+        assert isinstance(result, dict)
+
+
+# ============================================================
+# Hostile string tests (Phase 9.2)
+# ============================================================
+
+@pytest.mark.skipif(not HAS_NORMALIZE, reason="guard_normalize not importable")
+class TestHostileStrings:
+    """Test normalization functions against adversarial inputs."""
+
+    def test_null_bytes_removed(self):
+        """Null bytes in session_id must not appear in output."""
+        result = normalize_session_key("abc\x00def")
+        assert "\x00" not in result
+
+    def test_path_traversal_sanitized(self):
+        """Path traversal components must be resolved."""
+        result = normalize_file_path("../../../etc/passwd")
+        assert "../" not in result
+
+    def test_very_long_string_truncated(self):
+        """100KB string must be truncated by normalize_hook_payload."""
+        huge = "x" * 100_000
+        data = {"description": huge}
+        result = normalize_hook_payload(data)
+        assert len(result.get("description", "")) <= 1024
+
+    def test_control_characters_handled(self):
+        """Control characters must not crash normalization."""
+        control_str = "".join(chr(i) for i in range(32))
+        result = normalize_session_key(control_str)
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+    def test_json_injection_in_string(self):
+        """JSON strings embedded in values must not cause issues."""
+        data = {"description": '{"key": "value"}'}
+        result = normalize_hook_payload(data)
+        assert isinstance(result, dict)
+
+    def test_newline_injection_safe(self):
+        """Newlines in strings must not corrupt JSONL when serialized."""
+        data = {"description": "line1\nline2\nline3"}
+        result = normalize_hook_payload(data)
+        serialized = json.dumps(result)
+        assert "\n" not in serialized  # JSON escapes newlines as \\n
+
+    def test_unicode_bmp_characters(self):
+        """BMP Unicode characters must not crash normalization."""
+        unicode_str = "emoji: \u2603 \u2764 \u2602 CJK: \u4e16\u754c"
+        result = normalize_session_key(unicode_str)
+        assert isinstance(result, str)
+
+    def test_empty_string_handled(self):
+        """Empty string must not crash any normalizer."""
+        assert isinstance(normalize_session_key(""), str)
+        assert isinstance(normalize_file_path(""), str)
+        assert isinstance(normalize_hook_payload({}), dict)

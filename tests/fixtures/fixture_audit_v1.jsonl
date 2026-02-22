@@ -1,0 +1,20 @@
+{"ts": "2026-02-20T15:45:00", "event": "allow", "type": "Explore", "desc": "test explore", "session": "test-functio"}
+{"ts": "2026-02-20T15:45:01", "event": "block", "type": "Explore", "desc": "second explore", "session": "test-functio", "reason": "one_per_session limit"}
+{"ts": "2026-02-20T15:53:40", "event": "allow", "type": "Explore", "desc": "Explore twitter growth engine", "session": "e0064c1a-82d"}
+{"ts": "2026-02-20T15:56:06", "event": "allow", "type": "Explore", "desc": "test", "session": "rule1-first"}
+{"ts": "2026-02-20T15:56:06", "event": "allow", "type": "Explore", "desc": "test", "session": "rule1-second"}
+{"ts": "2026-02-20T15:56:06", "event": "block", "type": "Explore", "desc": "second", "session": "rule1-second", "reason": "one_per_session limit"}
+{"ts": "2026-02-20T15:56:06", "event": "allow", "type": "general-purpose", "desc": "test", "session": "rule2-first"}
+{"ts": "2026-02-20T15:56:06", "event": "allow", "type": "general-purpose", "desc": "test", "session": "rule2-second"}
+{"ts": "2026-02-20T15:56:06", "event": "block", "type": "general-purpose", "desc": "second", "session": "rule2-second", "reason": "max_per_type limit"}
+{"ts": "2026-02-20T15:56:06", "event": "allow", "type": "general-purpose", "desc": "test", "session": "rule3-cap"}
+{"ts": "2026-02-20T15:56:29", "event": "allow", "type": "Explore", "desc": "test", "session": "dirs-abs"}
+{"ts": "2026-02-20T15:56:29", "event": "allow", "type": "Explore", "desc": "test", "session": "dirs-none"}
+{"ts": "2026-02-20T15:56:30", "event": "allow", "type": "type-0", "desc": "test", "session": "atomic-test"}
+{"ts": "2026-02-20T15:56:30", "event": "allow", "type": "type-1", "desc": "test", "session": "atomic-test"}
+{"ts": "2026-02-20T15:56:30", "event": "allow", "type": "type-2", "desc": "test", "session": "atomic-test"}
+{"ts": "2026-02-20T18:04:25", "event": "block", "type": "Explore", "desc": "Explore codebase current state", "session": "713cb311-cf2", "reason": "necessity_check", "pattern": "count_how_many"}
+{"ts": "2026-02-21T17:30:22", "event": "allow", "type": "deep-researcher", "desc": "Research Claude Agent Teams", "session": "bc26514d-952"}
+{"ts": "2026-02-21T17:30:40", "event": "block", "type": "deep-researcher", "desc": "Research Claude Agent Teams", "session": "bc26514d-952", "reason": "max_per_type limit"}
+{"ts": "2026-02-21T17:30:55", "event": "block", "type": "Explore", "desc": "Full audit of lead system", "session": "bc26514d-952", "reason": "necessity_check", "pattern": "run_execute"}
+{"ts": "2026-02-21T19:33:30", "event": "allow", "type": "builder", "desc": "", "session": "../../bad-ta"}

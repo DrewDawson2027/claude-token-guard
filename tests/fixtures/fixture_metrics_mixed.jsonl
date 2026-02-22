@@ -1,0 +1,10 @@
+{"ts": "2026-02-21T02:33:10Z", "event": "stop", "agent_type": "claude-code-guide", "agent_id": "af59e681fbcbea278", "session": "5c0f21ea", "duration_seconds": "unknown"}
+{"ts": "2026-02-21T02:33:23Z", "event": "stop", "agent_type": "", "agent_id": "af74e356a86292d14", "session": "5c0f21ea", "duration_seconds": "unknown"}
+{"ts": "2026-02-21T02:36:48Z", "event": "stop", "agent_type": "", "agent_id": "a46b83ac64ad30ba9", "session": "37b4c8c2", "duration_seconds": "unknown"}
+{"ts": "2026-02-21T02:37:19Z", "event": "stop", "agent_type": "", "agent_id": "a20591773c732f901", "session": "b6496e46", "duration_seconds": "unknown"}
+{"ts": "2026-02-21T02:45:05Z", "event": "agent_completed", "agent_type": "", "agent_id": "aa656294a28c01ab7", "session": "b6496e46", "input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0, "cache_creation_tokens": 0, "api_calls": 0, "total_tokens": 0, "cost_usd": 0.0}
+{"ts": "2026-02-21T02:45:05Z", "event": "stop", "agent_type": "", "agent_id": "aa656294a28c01ab7", "session": "b6496e46", "duration_seconds": "unknown"}
+{"ts": "2026-02-21T02:46:27Z", "event": "agent_completed", "agent_type": "", "agent_id": "a45c138a5fef10e79", "session": "37b4c8c2", "input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0, "cache_creation_tokens": 0, "api_calls": 0, "total_tokens": 0, "cost_usd": 0.0}
+{"ts": "2026-02-21T02:46:27Z", "event": "stop", "agent_type": "", "agent_id": "a45c138a5fef10e79", "session": "37b4c8c2", "duration_seconds": "unknown"}
+{"ts": "2026-02-21T02:48:36Z", "event": "stop", "agent_type": "", "agent_id": "abaa8bb89bb6b7907", "session": "37b4c8c2", "duration_seconds": "unknown"}
+{"ts": "2026-02-21T02:48:36Z", "event": "agent_completed", "agent_type": "", "agent_id": "abaa8bb89bb6b7907", "session": "37b4c8c2", "input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0, "cache_creation_tokens": 0, "api_calls": 0, "total_tokens": 0, "cost_usd": 0.0}

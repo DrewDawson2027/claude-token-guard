@@ -1,0 +1,22 @@
+{
+  "agent_count": 1,
+  "agents": [
+    {
+      "type": "deep-researcher",
+      "description": "Research Claude Agent Teams",
+      "timestamp": 1771723822.391119
+    }
+  ],
+  "blocked_attempts": [
+    {
+      "type": "deep-researcher",
+      "description": "Research Claude Agent Teams",
+      "timestamp": 1771723840.577131
+    },
+    {
+      "type": "Explore",
+      "description": "Full audit of lead system",
+      "timestamp": 1771723855.05099
+    }
+  ]
+}

@@ -14,6 +14,8 @@ SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // "unknown"')
 CWD=$(echo "$INPUT" | jq -r '.cwd // "unknown"')
 TRANSCRIPT=$(echo "$INPUT" | jq -r '.transcript_path // "unknown"')
 SOURCE=$(echo "$INPUT" | jq -r '.source // "startup"')
+TEAM_ID="${CLAUDE_TEAM_ID:-}"
+TEAM_MEMBER_ID="${CLAUDE_TEAM_MEMBER_ID:-}"
 
 if [ "${CLAUDE_DEBUG:-}" = "1" ]; then
   echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) PARSED: session=$SESSION_ID cwd=$CWD source=$SOURCE" >> ~/.claude/terminals/debug-session-register.log
@@ -39,6 +41,7 @@ jq -c -n \
 RAW_TTY=$(ps -o tty= -p $PPID 2>/dev/null | sed 's/ //g')
 TTY=""
 [ -n "$RAW_TTY" ] && [ "$RAW_TTY" != "??" ] && TTY="/dev/$RAW_TTY"
+HOST_PID="$PPID"
 
 # Write per-session status file for quick lookup by lead (safe JSON via jq)
 jq -c -n \
@@ -49,7 +52,8 @@ jq -c -n \
   --arg transcript "$TRANSCRIPT" \
   --arg started "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   --arg last_active "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  '{session:$session,status:"active",project:$project,branch:$branch,cwd:$cwd,transcript:$transcript,started:$started,last_active:$last_active}' \
+  --argjson host_pid "$HOST_PID" \
+  '{session:$session,status:"active",project:$project,branch:$branch,cwd:$cwd,transcript:$transcript,started:$started,last_active:$last_active,host_pid:$host_pid}' \
   > ~/.claude/terminals/session-${SESSION_ID:0:8}.json
 
 # Add TTY if available (conditional jq merge)
@@ -57,6 +61,28 @@ if [ -n "$TTY" ]; then
   TMP=$(mktemp)
   jq --arg tty "$TTY" '. + {tty: $tty}' ~/.claude/terminals/session-${SESSION_ID:0:8}.json > "$TMP" && \
     mv "$TMP" ~/.claude/terminals/session-${SESSION_ID:0:8}.json
+fi
+
+# Capture iTerm2 tab name for this TTY (macOS only)
+if [ -n "$TTY" ] && command -v osascript &>/dev/null; then
+  TAB_NAME=$(osascript << APPLESCRIPT 2>/dev/null
+tell application "iTerm2"
+  repeat with w in windows
+    repeat with aTab in tabs of w
+      repeat with s in sessions of aTab
+        if tty of s is "$TTY" then return name of s
+      end repeat
+    end repeat
+  end repeat
+end tell
+APPLESCRIPT
+)
+  if [ -n "$TAB_NAME" ]; then
+    TMP=$(mktemp)
+    jq --arg name "$TAB_NAME" '. + {tab_name: $name}' \
+      ~/.claude/terminals/session-${SESSION_ID:0:8}.json > "$TMP" \
+      && mv "$TMP" ~/.claude/terminals/session-${SESSION_ID:0:8}.json
+  fi
 fi
 
 # Auto-truncate sessions log
@@ -113,5 +139,15 @@ find "$CACHE_DIR" -name "*.md" -mmin +1440 -exec sh -c 'echo "# Session Cache: $
 
 # Fix 1: Set terminal tab title to session ID for wake targeting by coord_wake_session
 printf '\e]0;claude-%s\a' "${SESSION_ID:0:8}"
+
+# Auto-attach spawned tmux teammate sessions (CLAUDE_TEAM_* envs are injected by team_runtime.py)
+if [ -n "$TEAM_ID" ] && [ -n "$TEAM_MEMBER_ID" ]; then
+  python3 ~/.claude/scripts/team_runtime.py hook session-start \
+    --session-id "${SESSION_ID:0:8}" \
+    --cwd "$CWD" \
+    --host-pid "$HOST_PID" \
+    --team-id "$TEAM_ID" \
+    --member-id "$TEAM_MEMBER_ID" >/dev/null 2>&1 || true
+fi
 
 exit 0

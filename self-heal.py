@@ -12,8 +12,10 @@ Runs on every session start (~50ms for a healthy system). Five phases:
 Always exits 0 (never blocks session start). Logs to session-state/self-heal.jsonl.
 """
 
+import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -26,8 +28,11 @@ try:
     from hook_utils import DEFAULT_CONFIG
 except (ImportError, SyntaxError):
     DEFAULT_CONFIG = {
+        "schema_version": 2,
         "max_agents": 5, "parallel_window_seconds": 30, "global_cooldown_seconds": 5,
         "max_per_subagent_type": 1, "state_ttl_hours": 24, "audit_log": True,
+        "failure_mode": "fail_open", "sanitize_session_ids": True, "normalize_paths": True,
+        "fault_audit": True, "max_string_field_length": 512, "metrics_correlation_window_seconds": 15,
         "one_per_session": ["Explore", "master-coder", "master-researcher",
                             "master-architect", "master-workflow", "Plan"],
         "always_allowed": ["claude-code-guide", "statusline-setup", "haiku"],
@@ -61,7 +66,7 @@ MASTER_AGENTS_DIR = os.path.expanduser("~/.claude/master-agents")
 
 # Mode files referenced by master agents — validated on session start
 EXPECTED_MODE_FILES = {
-    "coder": ["build-mode.md", "debug-mode.md", "review-mode.md", "refactor-mode.md", "atlas-mode.md"],
+    "coder": ["build-mode.md", "debug-mode.md", "review-mode.md", "refactor-mode.md"],
     "researcher": ["academic-mode.md", "market-mode.md", "technical-mode.md", "general-mode.md"],
     "architect": ["database-design.md", "api-design.md", "system-design.md", "frontend-design.md"],
     "workflow": ["gsd-exec.md", "feature-workflow.md", "git-workflow.md", "autonomous.md"],
@@ -106,6 +111,151 @@ def phase_mode_validation():
     return checks, repairs, actions
 
 
+def phase_data_quality():
+    """Phase 4c: Validate v2 data quality in audit and metrics logs.
+
+    Advisory warnings only — never blocks session start. Identifies
+    records that lack v2 schema markers or have known data gaps.
+    """
+    checks = 0
+    repairs = 0
+    actions = []
+
+    # Check audit entries for schema_version and malformed lines
+    audit_path = os.path.join(STATE_DIR, "audit.jsonl")
+    if os.path.isfile(audit_path):
+        checks += 1
+        try:
+            with open(audit_path, "r") as f:
+                lines = f.readlines()
+            sample_size = min(20, len(lines))
+            tail = lines[-sample_size:] if sample_size > 0 else []
+            v2_count = 0
+            malformed = 0
+            total_parsed = 0
+            for line in tail:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                    total_parsed += 1
+                    if entry.get("schema_version") == 2:
+                        v2_count += 1
+                except json.JSONDecodeError:
+                    malformed += 1
+            if v2_count == 0 and total_parsed > 0:
+                actions.append("audit: no v2 records in recent entries")
+                print(
+                    "WARNING: No schema_version=2 audit records found in recent entries. "
+                    "New records should include schema_version.",
+                    file=sys.stderr,
+                )
+            total_sampled = total_parsed + malformed
+            if total_sampled > 0 and malformed / total_sampled > 0.5:
+                actions.append(f"audit: {malformed}/{total_sampled} malformed JSON lines")
+        except OSError:
+            pass
+
+    # Check metrics entries for empty agent_type, zero-token, and malformed lines
+    metrics_path = os.path.join(STATE_DIR, "agent-metrics.jsonl")
+    if os.path.isfile(metrics_path):
+        checks += 1
+        try:
+            with open(metrics_path, "r") as f:
+                lines = f.readlines()
+            sample_size = min(20, len(lines))
+            tail = lines[-sample_size:] if sample_size > 0 else []
+            empty_type = 0
+            zero_tok = 0
+            no_schema = 0
+            malformed = 0
+            total_parsed = 0
+            for line in tail:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                    total_parsed += 1
+                    at = entry.get("agent_type", "")
+                    if not at or at == "unknown":
+                        empty_type += 1
+                    if not entry.get("schema_version"):
+                        no_schema += 1
+                    if (entry.get("event") == "agent_completed"
+                            and entry.get("input_tokens", 0) == 0
+                            and entry.get("output_tokens", 0) == 0):
+                        zero_tok += 1
+                except json.JSONDecodeError:
+                    malformed += 1
+            if empty_type > 0:
+                actions.append(f"metrics: {empty_type}/{total_parsed} recent entries have empty agent_type")
+            total_sampled = total_parsed + malformed
+            if total_sampled > 0 and malformed / total_sampled > 0.5:
+                actions.append(f"metrics: {malformed}/{total_sampled} malformed JSON lines")
+            if total_parsed > 0 and no_schema / total_parsed > 0.5:
+                actions.append(f"metrics: {no_schema}/{total_parsed} missing schema_version")
+        except OSError:
+            pass
+
+    return checks, repairs, actions
+
+
+_DRIFT_TRACKED_FILES = [
+    "token-guard.py", "read-efficiency-guard.py", "hook_utils.py",
+    "guard_contracts.py", "guard_normalize.py", "guard_events.py",
+    "agent-lifecycle.sh", "agent-metrics.py", "self-heal.py",
+]
+_CHECKSUMS_FILE = os.path.join(STATE_DIR, "hook-checksums.json")
+
+
+def phase_runtime_drift():
+    """Phase 5: Detect changes to hook files between sessions (advisory only)."""
+    checks = 0
+    repairs = 0
+    actions = []
+
+    # Compute current checksums
+    current = {}
+    for fname in _DRIFT_TRACKED_FILES:
+        fpath = os.path.join(HOOKS_DIR, fname)
+        checks += 1
+        if not os.path.isfile(fpath):
+            continue
+        try:
+            with open(fpath, "rb") as f:
+                current[fname] = hashlib.sha256(f.read()).hexdigest()[:16]
+        except OSError:
+            pass
+
+    # Compare against stored checksums
+    stored = {}
+    try:
+        with open(_CHECKSUMS_FILE, "r") as f:
+            stored = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        pass  # First run or corrupted — will create fresh
+
+    if stored:
+        for fname, cur_hash in current.items():
+            prev_hash = stored.get(fname)
+            if prev_hash and prev_hash != cur_hash:
+                actions.append(f"drift: {fname} changed since last session")
+        for fname in stored:
+            if fname not in current and fname in _DRIFT_TRACKED_FILES:
+                actions.append(f"drift: {fname} was removed")
+
+    # Save current checksums for next session
+    try:
+        with open(_CHECKSUMS_FILE, "w") as f:
+            json.dump(current, f, indent=2)
+    except OSError:
+        pass
+
+    return checks, repairs, actions
+
+
 def main():
     # NOTE: DEFAULT_CONFIG is imported from hook_utils with fallback (see top of file).
     # self-heal remains self-contained even if hook_utils is broken.
@@ -143,7 +293,22 @@ def main():
     repairs += r
     actions.extend(a)
 
-    # Phase 5: Report
+    # Phase 4c: v2 data quality validation
+    c, r, a = phase_data_quality()
+    checks += c
+    repairs += r
+    actions.extend(a)
+
+    # Phase 5: Runtime drift detection
+    try:
+        c, r, a = phase_runtime_drift()
+        checks += c
+        repairs += r
+        actions.extend(a)
+    except Exception:
+        pass  # Drift detection must never block session start
+
+    # Phase 6: Report
     status = "healthy" if repairs == 0 else "repaired"
     log_entry = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -193,6 +358,29 @@ def phase_structural():
         elif "max_agents" not in config:
             actions.append("config missing max_agents key")
             # Will be auto-repaired in phase 4
+        else:
+            try:
+                schema_version = int(config.get("schema_version", 1) or 1)
+            except (TypeError, ValueError):
+                schema_version = 1
+            if schema_version < 2:
+                actions.append("config schema_version < 2 (upgrade recommended)")
+            for required in ("failure_mode", "sanitize_session_ids", "normalize_paths"):
+                if required not in config:
+                    actions.append(f"config missing {required} key")
+            # Auto-repair missing v2-required fields from defaults
+            v2_fields = ("fault_audit", "max_string_field_length", "metrics_correlation_window_seconds")
+            for field in v2_fields:
+                if field not in config:
+                    config[field] = DEFAULT_CONFIG.get(field)
+                    actions.append(f"config: added missing {field}={config[field]}")
+                    repairs += 1
+            if repairs > 0:
+                try:
+                    with open(CONFIG_PATH, "w") as f:
+                        json.dump(config, f, indent=2)
+                except OSError:
+                    pass
     except FileNotFoundError:
         actions.append("config file missing")
         # Will be auto-repaired in phase 4
@@ -329,12 +517,26 @@ def phase_state_health():
         if not os.path.isfile(fpath):
             continue
 
+        # Check state file names match expected session_key pattern
+        if fname.endswith(".json") and not fname.endswith(".jsonl"):
+            checks += 1
+            base = fname[:-5]  # strip .json
+            if base.endswith("-reads"):
+                base = base[:-6]  # strip -reads
+            if not re.match(r'^[a-zA-Z0-9_-]{1,16}$', base) and base not in ("hook-checksums", "token-guard-config"):
+                actions.append(f"unusual state filename: {fname}")
+
         # Check for corrupted JSON state files
         if fname.endswith(".json") and fname != "audit.jsonl":
             checks += 1
             try:
                 with open(fpath, "r") as f:
-                    json.load(f)
+                    parsed = json.load(f)
+                # Validate session_key if present in v2 state
+                if isinstance(parsed, dict) and "session_key" in parsed:
+                    sk = str(parsed.get("session_key", ""))
+                    if "/" in sk or "\\" in sk or ".." in sk:
+                        actions.append(f"invalid session_key in {fname}")
             except (json.JSONDecodeError, ValueError):
                 try:
                     os.unlink(fpath)

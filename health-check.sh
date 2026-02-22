@@ -170,8 +170,13 @@ echo "Token Management:"
 if [ -f ~/.claude/hooks/token-guard-config.json ]; then
   if python3 -c "import json; json.load(open('$HOME/.claude/hooks/token-guard-config.json'))" 2>/dev/null; then
     MAX_AGENTS=$(python3 -c "import json; print(json.load(open('$HOME/.claude/hooks/token-guard-config.json')).get('max_agents', '?'))" 2>/dev/null)
-    echo "  PASS  config valid (max_agents=$MAX_AGENTS)"
+    CONFIG_SCHEMA=$(python3 -c "import json; print(json.load(open('$HOME/.claude/hooks/token-guard-config.json')).get('schema_version', 1))" 2>/dev/null)
+    echo "  PASS  config valid (schema_version=$CONFIG_SCHEMA, max_agents=$MAX_AGENTS)"
     PASS=$((PASS + 1))
+    if [ "$CONFIG_SCHEMA" -lt 2 ] 2>/dev/null; then
+      echo "  WARN  config schema_version < 2 (upgrade recommended)"
+      WARN=$((WARN + 1))
+    fi
   else
     echo "  FAIL  config is invalid JSON"
     FAIL=$((FAIL + 1))
@@ -189,6 +194,73 @@ if [ -f "$AUDIT_LOG" ]; then
   echo "  INFO  audit log: $AUDIT_LINES entries"
 else
   echo "  INFO  audit log: not yet created (will appear after first Task call)"
+fi
+
+METRICS_LOG="$STATE_DIR/agent-metrics.jsonl"
+if [ -f "$AUDIT_LOG" ] || [ -f "$METRICS_LOG" ]; then
+  DQ_OUT=$(python3 - <<PY 2>/dev/null
+import json, os
+state_dir = os.path.expanduser("$STATE_DIR")
+audit = os.path.join(state_dir, "audit.jsonl")
+metrics = os.path.join(state_dir, "agent-metrics.jsonl")
+invalid_legacy_session = 0
+v2_audit = 0
+v1_audit = 0
+faults = 0
+empty_agent_type = 0
+untagged_metrics = 0
+def lines(path):
+    if not os.path.isfile(path): return []
+    out = []
+    with open(path, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                out.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return out
+for e in lines(audit):
+    if int(e.get("schema_version", 1) or 1) >= 2:
+        v2_audit += 1
+    else:
+        v1_audit += 1
+    s = str(e.get("session", "")) if "session" in e else ""
+    if ("/" in s or ".." in s or "\\" in s):
+        invalid_legacy_session += 1
+    if e.get("event") == "fault":
+        faults += 1
+for m in lines(metrics):
+    if "record_type" not in m:
+        untagged_metrics += 1
+    if m.get("event") == "agent_completed" and not str(m.get("agent_type", "")).strip():
+        empty_agent_type += 1
+print(f"audit_v2={v2_audit} audit_v1={v1_audit} invalid_legacy_session={invalid_legacy_session} faults={faults} untagged_metrics={untagged_metrics} empty_agent_type={empty_agent_type}")
+PY
+)
+  [ -n "$DQ_OUT" ] && echo "  INFO  data-quality: $DQ_OUT"
+fi
+
+REPO_ROOT="$HOME/Projects/claude-lead-system"
+if [ -d "$REPO_ROOT/hooks" ]; then
+  DRIFT_COUNT=$(python3 - <<PY 2>/dev/null
+import filecmp, os
+home = os.path.expanduser("~")
+repo = os.path.join(home, "Projects", "claude-lead-system", "hooks")
+live = os.path.join(home, ".claude", "hooks")
+files = ["token-guard.py","read-efficiency-guard.py","agent-metrics.py","self-heal.py","health-check.sh","hook_utils.py","token-guard-config.json"]
+drift = 0
+for name in files:
+    a = os.path.join(repo, name)
+    b = os.path.join(live, name)
+    if os.path.isfile(a) and os.path.isfile(b) and not filecmp.cmp(a, b, shallow=False):
+        drift += 1
+print(drift)
+PY
+)
+  echo "  INFO  repo/live hook drift count: ${DRIFT_COUNT:-unknown}"
 fi
 
 echo ""

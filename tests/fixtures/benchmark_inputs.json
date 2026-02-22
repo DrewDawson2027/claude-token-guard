@@ -1,0 +1,73 @@
+[
+  {
+    "name": "task_allow_simple",
+    "description": "New agent spawn (should be allowed)",
+    "input": {
+      "tool_name": "Task",
+      "tool_input": {
+        "subagent_type": "general-purpose",
+        "description": "refactor the complex authentication system across multiple services"
+      },
+      "session_id": "bench-allow"
+    },
+    "expected_exit": 0
+  },
+  {
+    "name": "task_block_one_per_session",
+    "description": "Second Explore agent (should be blocked by one_per_session)",
+    "input": {
+      "tool_name": "Task",
+      "tool_input": {
+        "subagent_type": "Explore",
+        "description": "map the database schema and migration patterns"
+      },
+      "session_id": "bench-ops"
+    },
+    "pre_seed": {
+      "tool_name": "Task",
+      "tool_input": {
+        "subagent_type": "Explore",
+        "description": "explore authentication architecture"
+      },
+      "session_id": "bench-ops"
+    },
+    "expected_exit": 2
+  },
+  {
+    "name": "task_block_necessity",
+    "description": "Grep-like task (should be blocked by necessity check)",
+    "input": {
+      "tool_name": "Task",
+      "tool_input": {
+        "subagent_type": "Explore",
+        "description": "search for function handleAuth in the codebase"
+      },
+      "session_id": "bench-necessity"
+    },
+    "expected_exit": 2
+  },
+  {
+    "name": "read_allow_first",
+    "description": "First read of a file (should be allowed)",
+    "input": {
+      "tool_name": "Read",
+      "tool_input": {
+        "file_path": "/tmp/bench-test-file.py"
+      },
+      "session_id": "bench-read"
+    },
+    "expected_exit": 0
+  },
+  {
+    "name": "non_task_passthrough",
+    "description": "Non-Task tool call (should passthrough immediately)",
+    "input": {
+      "tool_name": "Grep",
+      "tool_input": {
+        "pattern": "handleAuth"
+      },
+      "session_id": "bench-passthrough"
+    },
+    "expected_exit": 0
+  }
+]

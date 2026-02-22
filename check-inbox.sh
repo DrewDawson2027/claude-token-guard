@@ -13,6 +13,15 @@ if [ -f "$INBOX" ] && [ -s "$INBOX" ]; then
   mv "$INBOX" "${INBOX}.processed"
 fi
 
+# Surface team runtime hook events (TeammateIdle / TaskCompleted / etc.) for this session.
+TEAM_EVENTS=$(python3 ~/.claude/scripts/team_runtime.py hook session-events --session-id "${SESSION_ID:0:8}" 2>/dev/null || true)
+if [ -n "$TEAM_EVENTS" ]; then
+  echo "$TEAM_EVENTS"
+fi
+
+# Cost visibility fallback (/cost parity): print compact statusline on cooldown / change.
+python3 ~/.claude/scripts/cost_runtime.py hook-statusline --session-id "${SESSION_ID:0:8}" 2>/dev/null || true
+
 # Fix 2: Check for completed workers and notify lead
 RESULTS_DIR=~/.claude/terminals/results
 for donefile in "$RESULTS_DIR"/*.meta.json.done; do
@@ -28,5 +37,8 @@ for donefile in "$RESULTS_DIR"/*.meta.json.done; do
     touch "$REPORTED"
   fi
 done
+
+# Bridge autonomous worker completions into team TaskCompleted/worker events.
+python3 ~/.claude/scripts/team_runtime.py hook reconcile-workers >/dev/null 2>&1 || true
 
 exit 0

@@ -26,6 +26,9 @@ jobs:
 
     name: Python ${{ matrix.python-version }} on ${{ matrix.os }}
 
+    env:
+      PYTHONIOENCODING: utf-8
+
     steps:
       - uses: actions/checkout@v4
 
@@ -43,6 +46,11 @@ jobs:
           export COVERAGE_PROCESS_START=$PWD/.coveragerc
           export PYTHONPATH=$PWD/tests:$PYTHONPATH
           python3 -m pytest tests/ -v --tb=short --benchmark-disable --cov --cov-report=xml --cov-report=term-missing
+        shell: bash
+
+      - name: Verify report command
+        run: |
+          python3 token-guard.py --report || true
         shell: bash
 
       - name: Upload coverage to Codecov

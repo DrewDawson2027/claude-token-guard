@@ -8,6 +8,7 @@ All tests use isolated temp directories so they never touch real session state.
 import json
 import os
 import subprocess
+import sys
 import time
 
 import pytest
@@ -94,6 +95,21 @@ class TestDuplicateFileBlocking:
         for i in range(5):
             code, _, _ = run_guard(make_read_input(f"/file{i}.py", sid), env=env)
             assert code == 0
+
+    def test_path_alias_counts_as_duplicate(self, isolated_env, tmp_path):
+        """Equivalent paths (via .. segments) should count toward duplicate limit."""
+        env, _ = isolated_env
+        sid = "alias-dup"
+        real = tmp_path / "src" / "file.py"
+        real.parent.mkdir()
+        real.write_text("print('x')\n")
+        alias = real.parent / ".." / "src" / "file.py"
+
+        assert run_guard(make_read_input(str(real), sid), env=env)[0] == 0
+        assert run_guard(make_read_input(str(alias), sid), env=env)[0] == 0
+        code, _, stderr = run_guard(make_read_input(str(real), sid), env=env)
+        assert code == 2
+        assert "BLOCKED" in stderr
 
 
 class TestSequentialReads:
@@ -403,3 +419,68 @@ class TestErrorResilience:
             assert code == 0, f"Expected fail-open (exit 0), got exit {code}"
         finally:
             os.chmod(str(state_dir), 0o755)
+
+
+class TestPathAliasEvasion:
+    """Test that path normalization prevents duplicate-read evasion via aliases."""
+
+    def test_dotdot_normalization(self, isolated_env):
+        """'/a/b/../c/file.py' and '/a/c/file.py' should count as same file."""
+        env, _ = isolated_env
+        sid = "alias-dotdot"
+        canonical = "/a/c/file.py"
+        aliased = "/a/b/../c/file.py"
+
+        # Two reads of canonical path
+        run_guard(make_read_input(canonical, sid), env=env)
+        run_guard(make_read_input(canonical, sid), env=env)
+        # Third read via dot-dot alias — should be blocked (3rd read of same normalized path)
+        code, _, stderr = run_guard(make_read_input(aliased, sid), env=env)
+        assert code == 2, f"Expected block (exit 2) for dot-dot alias, got {code}"
+        assert "BLOCKED" in stderr
+
+    def test_trailing_components_differ(self, isolated_env):
+        """Different files should NOT be blocked as duplicates."""
+        env, _ = isolated_env
+        sid = "alias-differ"
+
+        run_guard(make_read_input("/a/file1.py", sid), env=env)
+        run_guard(make_read_input("/a/file2.py", sid), env=env)
+        code, _, _ = run_guard(make_read_input("/a/file3.py", sid), env=env)
+        assert code == 0, "Different files should not be blocked"
+
+    def test_symlink_resolution(self, isolated_env, tmp_path):
+        """Symlinked path and real path should count as same file."""
+        env, _ = isolated_env
+        sid = "alias-symlink"
+
+        # Create a real file and a symlink to it
+        real_file = tmp_path / "real_file.py"
+        real_file.write_text("# real")
+        symlink = tmp_path / "link_file.py"
+        symlink.symlink_to(real_file)
+
+        real_path = str(real_file)
+        link_path = str(symlink)
+
+        # Two reads via real path
+        run_guard(make_read_input(real_path, sid), env=env)
+        run_guard(make_read_input(real_path, sid), env=env)
+        # Third read via symlink — should be blocked (same resolved path)
+        code, _, stderr = run_guard(make_read_input(link_path, sid), env=env)
+        assert code == 2, f"Expected block (exit 2) for symlink alias, got {code}"
+        assert "BLOCKED" in stderr
+
+    @pytest.mark.skipif(sys.platform != "darwin", reason="macOS-only /tmp → /private/tmp")
+    def test_macos_private_tmp(self, isolated_env):
+        """/tmp/x and /private/tmp/x should resolve to same path on macOS."""
+        env, _ = isolated_env
+        sid = "alias-macos"
+
+        # /tmp on macOS is a symlink to /private/tmp
+        run_guard(make_read_input("/tmp/test_alias.py", sid), env=env)
+        run_guard(make_read_input("/tmp/test_alias.py", sid), env=env)
+        # Third read via /private/tmp — should be blocked
+        code, _, stderr = run_guard(make_read_input("/private/tmp/test_alias.py", sid), env=env)
+        assert code == 2, f"Expected block (exit 2) for /private/tmp alias, got {code}"
+        assert "BLOCKED" in stderr

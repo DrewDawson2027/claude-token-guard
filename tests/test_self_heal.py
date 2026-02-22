@@ -23,11 +23,19 @@ def isolated_env(tmp_path):
     state_dir.mkdir()
     config_path = tmp_path / "token-guard-config.json"
     config_path.write_text(json.dumps({
+        "schema_version": 2,
         "max_agents": 5,
         "parallel_window_seconds": 30,
+        "global_cooldown_seconds": 5,
         "max_per_subagent_type": 1,
         "state_ttl_hours": 24,
         "audit_log": True,
+        "failure_mode": "fail_open",
+        "sanitize_session_ids": True,
+        "normalize_paths": True,
+        "fault_audit": True,
+        "max_string_field_length": 512,
+        "metrics_correlation_window_seconds": 15,
         "one_per_session": ["Explore", "Plan"],
         "always_allowed": ["claude-code-guide", "statusline-setup"],
     }))

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "claude-token-guard"
-version = "1.0.0"
+version = "1.1.0"
 description = "Stop Claude Code from burning your API budget. Mechanical enforcement via sys.exit(2)."
 readme = "README.md"
 license = {text = "MIT"}

@@ -11,4 +11,6 @@ if [ -f "$SESSION_FILE" ]; then
   jq '.status = "closed" | .ended = "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"' "$SESSION_FILE" > "$TMP" && mv "$TMP" "$SESSION_FILE"
 fi
 
+python3 ~/.claude/scripts/team_runtime.py hook session-end --session-id "${SESSION_ID:0:8}" >/dev/null 2>&1 || true
+
 exit 0

@@ -44,7 +44,18 @@ import os
 import re
 import sys
 import time
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+
+from guard_contracts import (
+    build_audit_entry,
+    build_decision_id,
+    entry_reason,
+    entry_schema_version,
+    entry_session_key,
+    entry_type,
+)
+from guard_events import append_jsonl
+from guard_normalize import normalize_hook_payload, normalize_session_key, normalize_subagent_type, normalize_text
 
 # Shared infrastructure — locking, state, audit, config
 from hook_utils import (
@@ -246,6 +257,20 @@ def load_config() -> Dict:
     config["max_per_subagent_type"] = _safe_int(config.get("max_per_subagent_type"), DEFAULT_CONFIG["max_per_subagent_type"])
     config["state_ttl_hours"] = _safe_int(config.get("state_ttl_hours"), DEFAULT_CONFIG["state_ttl_hours"])
     config["audit_log"] = bool(config.get("audit_log", DEFAULT_CONFIG["audit_log"]))
+    config["schema_version"] = _safe_int(config.get("schema_version"), DEFAULT_CONFIG["schema_version"])
+    config["sanitize_session_ids"] = bool(config.get("sanitize_session_ids", DEFAULT_CONFIG["sanitize_session_ids"]))
+    config["normalize_paths"] = bool(config.get("normalize_paths", DEFAULT_CONFIG["normalize_paths"]))
+    config["fault_audit"] = bool(config.get("fault_audit", DEFAULT_CONFIG["fault_audit"]))
+    config["max_string_field_length"] = _safe_int(
+        config.get("max_string_field_length"),
+        DEFAULT_CONFIG["max_string_field_length"],
+    )
+    config["metrics_correlation_window_seconds"] = _safe_int(
+        config.get("metrics_correlation_window_seconds"),
+        DEFAULT_CONFIG["metrics_correlation_window_seconds"],
+    )
+    failure_mode = normalize_text(config.get("failure_mode"), max_len=20).lower()
+    config["failure_mode"] = failure_mode if failure_mode in {"fail_open", "fail_closed"} else DEFAULT_CONFIG["failure_mode"]
     config["one_per_session"] = set(config.get("one_per_session", DEFAULT_CONFIG["one_per_session"]))
     config["always_allowed"] = set(config.get("always_allowed", DEFAULT_CONFIG["always_allowed"]))
     return config
@@ -270,20 +295,33 @@ def cleanup_stale_state(ttl_hours: int) -> None:
     # not here on the hot path. See self-heal.py phase_state_health().
 
 
-def audit(event_type: str, subagent_type: str, description: str, session_id: str, reason: str = "", matched_pattern: str = "") -> None:
-    """Append a single JSON line to the audit log with file locking. Non-critical."""
-    entry = {
-        "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "event": event_type,
-        "type": subagent_type,
-        "desc": description[:80],
-        "session": session_id[:12],
-    }
-    if reason:
-        entry["reason"] = reason[:120]
-    if matched_pattern:
-        entry["pattern"] = matched_pattern
-    locked_append(AUDIT_LOG, json.dumps(entry) + "\n")
+def audit(
+    event_type: str,
+    subagent_type: str,
+    description: str,
+    session_id: str,
+    reason: str = "",
+    matched_pattern: str = "",
+    decision_id: str = "",
+    latency_ms: Optional[int] = None,
+    message: str = "",
+    fault_class: str = "",
+) -> str:
+    """Append a v2+legacy-compatible audit record. Non-critical on write failure."""
+    entry = build_audit_entry(
+        event_type=event_type,
+        subagent_type=subagent_type,
+        description=description,
+        session_id=session_id,
+        reason=reason,
+        matched_pattern=matched_pattern,
+        decision_id=decision_id,
+        latency_ms=latency_ms,
+        message=message,
+        fault_class=fault_class,
+    )
+    append_jsonl(AUDIT_LOG, entry)
+    return str(entry.get("decision_id", ""))
 
 
 def check_necessity(description: str, prompt_text: str) -> Tuple[bool, str, str]:
@@ -334,16 +372,29 @@ def check_type_switching(state: Dict, description: str, subagent_type: str) -> T
 
 def default_state() -> Dict:
     """Return the default empty state for a new session."""
-    return {"agent_count": 0, "agents": [], "blocked_attempts": []}
+    return {
+        "schema_version": 2,
+        "session_key": "",
+        "agent_count": 0,
+        "agents": [],
+        "blocked_attempts": [],
+        "pending_spawns": [],
+        "last_decision_ts": 0,
+        "fault_counters": {},
+    }
 
 
 def main():
+    start_time = time.time()
+    config = load_config()
+
     try:
         os.makedirs(STATE_DIR, exist_ok=True)
     except OSError:
+        if config.get("failure_mode") == "fail_closed":
+            print("BLOCKED: Cannot create state directory (strict mode)", file=sys.stderr)
+            sys.exit(2)
         sys.exit(0)  # Can't create state dir — fail-open
-
-    config = load_config()
     max_agents = config["max_agents"]
     parallel_window_seconds = config["parallel_window_seconds"]
     global_cooldown = config["global_cooldown_seconds"]
@@ -358,18 +409,27 @@ def main():
     try:
         input_data = json.load(sys.stdin)
     except (json.JSONDecodeError, EOFError, ValueError):
+        if config.get("fault_audit") and audit_enabled:
+            audit("fault", "unknown", "", "unknown", reason="stdin_parse_error", fault_class="json_decode")
         sys.exit(0)  # Can't parse input — fail-open, not fail-closed
 
-    tool_name = input_data.get("tool_name", "")
+    if not isinstance(input_data, dict):
+        sys.exit(0)  # Non-dict JSON (null, array, scalar) — fail-open
+
+    tool_name = normalize_text(input_data.get("tool_name", ""), max_len=80)
     tool_input = input_data.get("tool_input", {})
+    if not isinstance(tool_input, dict):
+        tool_input = {}
     session_id = input_data.get("session_id", "unknown")
+    session_key = normalize_session_key(session_id)
 
     # Only gate Task tool calls
     if tool_name != "Task":
         sys.exit(0)
 
-    subagent_type = tool_input.get("subagent_type", "")
-    description = tool_input.get("description", "")
+    max_field_len = max(64, config.get("max_string_field_length", 512))
+    subagent_type = normalize_subagent_type(tool_input.get("subagent_type", ""), max_len=min(80, max_field_len))
+    description = normalize_text(tool_input.get("description", ""), max_len=max_field_len)
 
     # Skip gating for lightweight agents
     if subagent_type in always_allowed:
@@ -381,25 +441,40 @@ def main():
             audit("resume", subagent_type or "resumed", description, session_id)
         sys.exit(0)  # Always allow resumes
 
-    state_file = os.path.join(STATE_DIR, f"{session_id}.json")
+    state_file = os.path.join(STATE_DIR, f"{session_key}.json")
 
     # File-locked state access (prevents race conditions from parallel tool calls)
     lock_file = state_file + ".lock"
     try:
         lf = open(lock_file, "w")
     except OSError:
+        if config.get("fault_audit") and audit_enabled:
+            audit("fault", subagent_type, description, session_id, reason="lock_open_error", fault_class="state_lock")
+        if config.get("failure_mode") == "fail_closed":
+            print("BLOCKED: Cannot create lock file (strict mode)", file=sys.stderr)
+            sys.exit(2)
         sys.exit(0)  # Can't create lock file — fail-open
     try:
         lock(lf)
         try:
             state = load_json_state(state_file, default_state)
             now = time.time()
+            state.setdefault("schema_version", 2)
+            state["session_key"] = session_key
+            state.setdefault("pending_spawns", [])
+            state.setdefault("fault_counters", {})
+            state["last_decision_ts"] = now
 
             # Prune stale blocked_attempts (5-minute TTL)
             state["blocked_attempts"] = [
                 a for a in state.get("blocked_attempts", [])
                 if now - a.get("timestamp", 0) < BLOCKED_ATTEMPTS_TTL
             ]
+            # Prune/compact pending spawns (correlation scaffold)
+            state["pending_spawns"] = [
+                p for p in state.get("pending_spawns", [])
+                if now - p.get("timestamp", 0) < max(config.get("metrics_correlation_window_seconds", 15) * 20, 300)
+            ][-25:]
 
             # TEAM DETECTION — team spawns bypass rules but count toward session cap
             if tool_input.get("team_name"):
@@ -409,17 +484,33 @@ def main():
                         f"Reduce team size or increase max_agents in config."
                     )
                     if audit_enabled:
-                        audit("block", subagent_type, description, session_id, "team_session_cap")
+                        audit(
+                            "block", subagent_type, description, session_id, "team_session_cap",
+                            latency_ms=int((time.time() - start_time) * 1000)
+                        )
                     block(reason)
                 # Record and allow
+                decision_id = build_decision_id("allow_team", subagent_type, session_id)
                 state["agent_count"] += 1
                 state["agents"].append({
                     "type": subagent_type, "description": description,
                     "timestamp": now, "team": tool_input["team_name"],
+                    "decision_id": decision_id,
+                })
+                state["pending_spawns"].append({
+                    "decision_id": decision_id,
+                    "type": subagent_type,
+                    "timestamp": now,
+                    "description": description[:120],
+                    "team": True,
+                    "consumed": False,
                 })
                 save_json_state(state_file, state)
                 if audit_enabled:
-                    audit("allow_team", subagent_type, description, session_id)
+                    audit(
+                        "allow_team", subagent_type, description, session_id,
+                        decision_id=decision_id, latency_ms=int((time.time() - start_time) * 1000)
+                    )
                 sys.exit(0)
 
             # RULE 1: One-per-session types (Explore, Plan, master-coder, etc.)
@@ -436,7 +527,10 @@ def main():
                     })
                     save_json_state(state_file, state)
                     if audit_enabled:
-                        audit("block", subagent_type, description, session_id, "one_per_session limit")
+                        audit(
+                            "block", subagent_type, description, session_id, "one_per_session limit",
+                            latency_ms=int((time.time() - start_time) * 1000)
+                        )
                     block(reason)
 
             # RULE 2: No duplicate subagent_types (for types NOT already covered by Rule 1)
@@ -451,7 +545,10 @@ def main():
                 })
                 save_json_state(state_file, state)
                 if audit_enabled:
-                    audit("block", subagent_type, description, session_id, "max_per_type limit")
+                    audit(
+                        "block", subagent_type, description, session_id, "max_per_type limit",
+                        latency_ms=int((time.time() - start_time) * 1000)
+                    )
                 block(reason)
 
             # RULE 3: Session agent cap
@@ -466,7 +563,10 @@ def main():
                 })
                 save_json_state(state_file, state)
                 if audit_enabled:
-                    audit("block", subagent_type, description, session_id, "session_cap limit")
+                    audit(
+                        "block", subagent_type, description, session_id, "session_cap limit",
+                        latency_ms=int((time.time() - start_time) * 1000)
+                    )
                 block(reason)
 
             # RULE 4: No spawns within window of same type (catches same-turn parallel spawns)
@@ -486,7 +586,10 @@ def main():
                 })
                 save_json_state(state_file, state)
                 if audit_enabled:
-                    audit("block", subagent_type, description, session_id, "parallel_window limit")
+                    audit(
+                        "block", subagent_type, description, session_id, "parallel_window limit",
+                        latency_ms=int((time.time() - start_time) * 1000)
+                    )
                 block(reason)
 
             # RULE 5: Necessity check — block obviously simple tasks
@@ -502,7 +605,10 @@ def main():
                 })
                 save_json_state(state_file, state)
                 if audit_enabled:
-                    audit("block", subagent_type, description, session_id, "necessity_check", pattern_name)
+                    audit(
+                        "block", subagent_type, description, session_id, "necessity_check", pattern_name,
+                        latency_ms=int((time.time() - start_time) * 1000)
+                    )
                 block(reason)
 
             # RULE 6: Type-switching detection
@@ -517,7 +623,10 @@ def main():
                 })
                 save_json_state(state_file, state)
                 if audit_enabled:
-                    audit("block", subagent_type, description, session_id, "type_switching")
+                    audit(
+                        "block", subagent_type, description, session_id, "type_switching",
+                        latency_ms=int((time.time() - start_time) * 1000)
+                    )
                 block(reason)
 
             # RULE 7: Global cooldown — prevent rapid-fire spawns of any type
@@ -536,7 +645,10 @@ def main():
                     })
                     save_json_state(state_file, state)
                     if audit_enabled:
-                        audit("block", subagent_type, description, session_id, "global_cooldown")
+                        audit(
+                            "block", subagent_type, description, session_id, "global_cooldown",
+                            latency_ms=int((time.time() - start_time) * 1000)
+                        )
                     block(reason)
 
             # ADVISORY: First-spawn reminder (non-blocking)
@@ -563,6 +675,8 @@ def main():
                 "description": description,
                 "timestamp": now,
             }
+            decision_id = build_decision_id("allow", subagent_type, session_id)
+            agent_record["decision_id"] = decision_id
 
             # For Explore agents, extract target directories from the prompt
             # so read-efficiency-guard.py can detect duplicate reads
@@ -574,10 +688,20 @@ def main():
 
             state["agent_count"] += 1
             state["agents"].append(agent_record)
+            state["pending_spawns"].append({
+                "decision_id": decision_id,
+                "type": subagent_type,
+                "timestamp": now,
+                "description": description[:120],
+                "consumed": False,
+            })
             save_json_state(state_file, state)
 
             if audit_enabled:
-                audit("allow", subagent_type, description, session_id)
+                audit(
+                    "allow", subagent_type, description, session_id,
+                    decision_id=decision_id, latency_ms=int((time.time() - start_time) * 1000)
+                )
 
         finally:
             unlock(lf)
@@ -617,7 +741,7 @@ def extract_target_dirs(prompt: str) -> List[str]:
     return dirs
 
 
-def report() -> None:
+def report(json_output: bool = False) -> None:
     """Print cross-session analytics from audit log."""
     from collections import Counter
 
@@ -630,6 +754,7 @@ def report() -> None:
     blocks = [e for e in entries if e.get("event") == "block"]
     resumes = [e for e in entries if e.get("event") == "resume"]
     teams = [e for e in entries if e.get("event") == "allow_team"]
+    faults = [e for e in entries if e.get("event") == "fault"]
     total = len(allows) + len(blocks)
 
     print(f"\n{'='*40}")
@@ -640,15 +765,16 @@ def report() -> None:
     print(f"Blocked: {len(blocks)} ({len(blocks)/max(total,1)*100:.0f}%)")
     print(f"Resumes: {len(resumes)}")
     print(f"Team spawns: {len(teams)}")
+    print(f"Fault events: {len(faults)}")
     print(f"\nTop agent types:")
-    for t, c in Counter(e.get("type", "?") for e in allows).most_common(5):
+    for t, c in Counter(entry_type(e) for e in allows).most_common(5):
         print(f"  {t}: {c}")
     print(f"\nBlock reasons:")
-    for r, c in Counter(e.get("reason", "?") for e in blocks).most_common(5):
+    for r, c in Counter(entry_reason(e) or "?" for e in blocks).most_common(5):
         print(f"  {r}: {c}")
 
     # Necessity pattern breakdown (feedback loop for tuning)
-    necessity_blocks = [e for e in blocks if e.get("reason") == "necessity_check"]
+    necessity_blocks = [e for e in blocks if (entry_reason(e) == "necessity_check")]
     if necessity_blocks:
         print(f"\nNecessity patterns triggered:")
         for p, c in Counter(e.get("pattern", "?") for e in necessity_blocks).most_common(10):
@@ -679,28 +805,121 @@ def report() -> None:
     metrics_file = os.path.join(STATE_DIR, "agent-metrics.jsonl")
     if os.path.isfile(metrics_file):
         real_metrics = read_jsonl_fault_tolerant(metrics_file)
-        completed = [m for m in real_metrics if m.get("event") == "agent_completed"]
+        completed = [
+            m for m in real_metrics
+            if m.get("event") == "agent_completed" and (m.get("record_type") in (None, "usage"))
+        ]
         if completed:
             real_input = sum(m.get("input_tokens", 0) for m in completed)
             real_output = sum(m.get("output_tokens", 0) for m in completed)
             real_cache = sum(m.get("cache_read_tokens", 0) for m in completed)
             real_cost = sum(m.get("cost_usd", 0) for m in completed)
+            correlated = [m for m in completed if m.get("correlated") is True]
             print(f"\nReal metrics (from transcript parsing):")
             print(f"  Agents metered: {len(completed)}")
             print(f"  Input tokens: {real_input:,}")
             print(f"  Output tokens: {real_output:,}")
             print(f"  Cache reads: {real_cache:,} ({real_cache/max(real_input,1)*100:.0f}% cache hit)")
             print(f"  Actual cost: ${real_cost:.4f}")
+            print(f"  Correlated usage records: {len(correlated)}/{len(completed)}")
 
     # Warn/allow breakdown
     warns = [e for e in entries if e.get("event") == "warn"]
     if warns:
         print(f"\nWarnings (non-blocking): {len(warns)}")
-        for r, c in Counter(e.get("reason", "?") for e in warns).most_common(5):
+        for r, c in Counter(entry_reason(e) or "?" for e in warns).most_common(5):
             print(f"  {r}: {c}")
 
-    print(f"\nUnique sessions: {len(set(e.get('session', '?') for e in entries))}")
+    versions = Counter(entry_schema_version(e) for e in entries)
+    invalid_sessions = sum(1 for e in entries if "/" in str(e.get("session", "")) or ".." in str(e.get("session", "")))
+    sessions = {entry_session_key(e) for e in entries}
+    print(f"\nData quality (audit):")
+    print(f"  Schema versions seen: {dict(sorted(versions.items()))}")
+    print(f"  Invalid legacy session fields: {invalid_sessions}")
+    print(f"  Fault-tolerant entries loaded: {len(entries)}")
+
+    # Extended data quality for metrics
+    if os.path.isfile(metrics_file):
+        all_metrics = read_jsonl_fault_tolerant(metrics_file)
+        rt_counts = Counter(m.get("record_type", "none") for m in all_metrics)
+        empty_type = sum(1 for m in all_metrics if not m.get("agent_type") or m.get("agent_type") == "unknown")
+        zero_tok = sum(
+            1 for m in all_metrics
+            if m.get("event") == "agent_completed"
+            and m.get("input_tokens", 0) == 0
+            and m.get("output_tokens", 0) == 0
+        )
+        uncorrelated = sum(
+            1 for m in all_metrics
+            if m.get("event") == "agent_completed"
+            and not m.get("correlated")
+        )
+        total_usage = sum(1 for m in all_metrics if m.get("event") == "agent_completed")
+        correlated_count = sum(1 for m in all_metrics if m.get("event") == "agent_completed" and m.get("correlated"))
+        transcript_found = sum(1 for m in all_metrics if m.get("event") == "agent_completed" and m.get("transcript_found"))
+        corr_rate = f"{correlated_count/total_usage*100:.0f}%" if total_usage else "n/a"
+        trans_rate = f"{transcript_found/total_usage*100:.0f}%" if total_usage else "n/a"
+        print(f"\nData quality (metrics):")
+        print(f"  Record types: {dict(sorted(rt_counts.items()))}")
+        print(f"  Empty agent_type: {empty_type}/{len(all_metrics)}")
+        print(f"  Zero-token completions: {zero_tok}")
+        print(f"  Uncorrelated records: {uncorrelated}")
+        print(f"  Correlation rate: {corr_rate} ({correlated_count}/{total_usage})")
+        print(f"  Transcript found rate: {trans_rate} ({transcript_found}/{total_usage})")
+
+    # System health summary
+    config = load_config()
+    hook_files_count = 0
+    hook_files_total = 11
+    for hf in ["token-guard.py", "read-efficiency-guard.py", "hook_utils.py", "self-heal.py",
+                "health-check.sh", "token-guard-config.json", "guard_contracts.py",
+                "guard_normalize.py", "guard_events.py", "agent-lifecycle.sh", "agent-metrics.py"]:
+        if os.path.isfile(os.path.join(os.path.dirname(STATE_DIR), hf)):
+            hook_files_count += 1
+
+    last_heal = "unknown"
+    heal_log = os.path.join(STATE_DIR, "self-heal.jsonl")
+    if os.path.isfile(heal_log):
+        heal_entries = read_jsonl_fault_tolerant(heal_log)
+        if heal_entries:
+            last_entry = heal_entries[-1]
+            last_heal = last_entry.get("ts", last_entry.get("timestamp", "unknown"))
+            if isinstance(last_heal, str):
+                last_heal = last_heal[:19]
+
+    print(f"\nSystem health:")
+    print(f"  Config version: {config.get('schema_version', '?')}")
+    print(f"  Failure mode: {config.get('failure_mode', 'fail_open')}")
+    print(f"  Hook files: {hook_files_count}/{hook_files_total} present")
+    print(f"  Last self-heal: {last_heal}")
+
+    print(f"\nUnique sessions: {len(sessions)}")
     print(f"{'='*40}\n")
+
+    # JSON output mode
+    if json_output:
+        report_data = {
+            "total_attempts": total,
+            "allowed": len(allows),
+            "blocked": len(blocks),
+            "resumes": len(resumes),
+            "team_spawns": len(teams),
+            "faults": len(faults),
+            "block_rate": round(len(blocks) / max(total, 1) * 100, 1),
+            "unique_sessions": len(sessions),
+            "top_types": dict(Counter(entry_type(e) for e in allows).most_common(5)),
+            "top_block_reasons": dict(Counter(entry_reason(e) or "?" for e in blocks).most_common(5)),
+            "estimated_tokens_used": len(allows) * 50000,
+            "estimated_tokens_saved": len(blocks) * 50000,
+            "system_health": {
+                "config_version": config.get("schema_version", 0),
+                "failure_mode": config.get("failure_mode", "fail_open"),
+                "hook_files_present": hook_files_count,
+                "hook_files_total": hook_files_total,
+                "last_self_heal": last_heal,
+            },
+        }
+        print(json.dumps(report_data, indent=2))
 
 
 def usage() -> None:
@@ -715,7 +934,7 @@ def usage() -> None:
     allows = [e for e in entries if e.get("event") == "allow"]
     blocks = [e for e in entries if e.get("event") == "block"]
     total = len(allows) + len(blocks)
-    sessions = len(set(e.get("session", "?") for e in entries))
+    sessions = len({entry_session_key(e) for e in entries})
 
     # Find earliest timestamp
     timestamps = [e.get("ts", "") for e in entries if e.get("ts")]
@@ -728,7 +947,9 @@ def usage() -> None:
     saved_cost = len(blocks) * COST_PER_AGENT
 
     # Top block reasons
-    reason_counts = Counter(e.get("reason", "?") for e in blocks).most_common(3)
+    reason_counts = Counter(entry_reason(e) or "?" for e in blocks).most_common(3)
+    versions = Counter(entry_schema_version(e) for e in entries)
+    faults = len([e for e in entries if e.get("event") == "fault"])
 
     print(f"\n{'='*40}")
     print(f"  YOUR TOKEN GUARD USAGE")
@@ -743,6 +964,8 @@ def usage() -> None:
         print(f"Top block reasons:")
         for reason, count in reason_counts:
             print(f"  {reason}: {count}")
+    print(f"Schema versions: {dict(sorted(versions.items()))}")
+    print(f"Fault events: {faults}")
     print(f"{'='*40}")
     print(f"\nShare this as a testimonial:")
     print(f'"Token Guard saved me ~${saved_cost:.2f} across {sessions} sessions '
@@ -752,7 +975,8 @@ def usage() -> None:
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--report":
-        report()
+        json_flag = "--json" in sys.argv
+        report(json_output=json_flag)
     elif len(sys.argv) > 1 and sys.argv[1] == "--usage":
         usage()
     else:

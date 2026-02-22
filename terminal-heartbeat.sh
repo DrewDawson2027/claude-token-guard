@@ -51,9 +51,40 @@ touch "$LOCK_FILE"
 RAW_TTY=$(ps -o tty= -p $PPID 2>/dev/null | sed 's/ //g')
 CURR_TTY=""
 [ -n "$RAW_TTY" ] && [ "$RAW_TTY" != "??" ] && CURR_TTY="/dev/$RAW_TTY"
+HOST_PID="$PPID"
 
 SESSION_FILE=~/.claude/terminals/session-${SID8}.json
 SCHEMA_VERSION=2  # Increment when adding new fields
+
+# Refresh iTerm2 tab name (once per ~60s, macOS only)
+TAB_NAME_LOCK="/tmp/claude-tabname-${SID8}.lock"
+DO_TABNAME=false
+if [ ! -f "$TAB_NAME_LOCK" ]; then
+  DO_TABNAME=true
+else
+  TAB_AGE=$(( $(date +%s) - $(stat -f %m "$TAB_NAME_LOCK" 2>/dev/null || echo 0) ))
+  [ "$TAB_AGE" -gt 60 ] && DO_TABNAME=true
+fi
+
+if $DO_TABNAME && [ -n "$CURR_TTY" ] && command -v osascript &>/dev/null; then
+  touch "$TAB_NAME_LOCK"
+  TAB_NAME=$(osascript << APPLESCRIPT 2>/dev/null
+tell application "iTerm2"
+  repeat with w in windows
+    repeat with aTab in tabs of w
+      repeat with s in sessions of aTab
+        if tty of s is "$CURR_TTY" then return name of s
+      end repeat
+    end repeat
+  end repeat
+end tell
+APPLESCRIPT
+)
+  if [ -n "$TAB_NAME" ] && [ -f "$SESSION_FILE" ]; then
+    TMP=$(mktemp)
+    jq --arg name "$TAB_NAME" '.tab_name = $name' "$SESSION_FILE" > "$TMP" && mv "$TMP" "$SESSION_FILE"
+  fi
+fi
 
 if [ -f "$SESSION_FILE" ]; then
   TMP=$(mktemp)
@@ -64,6 +95,7 @@ if [ -f "$SESSION_FILE" ]; then
      --arg file_base "$FILE_BASE" \
      --arg file_path "$FILE_PATH" \
      --arg tty "$CURR_TTY" \
+     --argjson host_pid "$HOST_PID" \
      --argjson schema "$SCHEMA_VERSION" \
      --arg is_write_edit "$([ "$TOOL_NAME" = "Write" ] || [ "$TOOL_NAME" = "Edit" ] && echo "yes" || echo "no")" \
      '
@@ -71,6 +103,7 @@ if [ -f "$SESSION_FILE" ]; then
      .last_tool = $tool |
      .last_file = $file_base |
      .schema_version = $schema |
+     .host_pid = $host_pid |
      (if $tty != "" then .tty = $tty else . end) |
      .tool_counts = ((.tool_counts // {}) | .[$tool] = ((.[$tool] // 0) + 1)) |
      (if $is_write_edit == "yes" then
@@ -91,6 +124,7 @@ else
      --arg tool "$TOOL_NAME" \
      --arg file_base "$FILE_BASE" \
      --arg tty "$CURR_TTY" \
+     --argjson host_pid "$HOST_PID" \
      --argjson schema "$SCHEMA_VERSION" \
      '
      {
@@ -105,6 +139,7 @@ else
        last_tool: $tool,
        last_file: $file_base,
        source: "heartbeat-fallback",
+       host_pid: $host_pid,
        schema_version: $schema,
        tool_counts: {($tool): 1},
        files_touched: [],
@@ -158,21 +193,11 @@ if $DO_STALE; then
   done
 fi
 
-# ─── Atlas backward compat ───
-case "$CWD" in
-  */Desktop/Atlas*|*/atlas-betting*)
-    mkdir -p ~/.claude/atlas-terminals
-    jq -c -n --arg ts "$NOW" --arg session "$SID8" --arg tool "$TOOL_NAME" \
-          --arg file "$FILE_BASE" --arg path "$FILE_PATH" --arg cwd "$CWD" \
-          '{ts:$ts,session:$session,tool:$tool,file:$file,path:$path,cwd:$cwd}' \
-      >> ~/.claude/atlas-terminals/activity.jsonl
-    ALINES=$(wc -l < ~/.claude/atlas-terminals/activity.jsonl 2>/dev/null || echo 0)
-    [ "$ALINES" -gt 250 ] && tail -200 ~/.claude/atlas-terminals/activity.jsonl > ~/.claude/atlas-terminals/activity.tmp && mv ~/.claude/atlas-terminals/activity.tmp ~/.claude/atlas-terminals/activity.jsonl
-    ;;
-esac
-
 # Auto-truncate activity log
 LINES=$(wc -l < ~/.claude/terminals/activity.jsonl 2>/dev/null || echo 0)
 [ "$LINES" -gt 600 ] && tail -500 ~/.claude/terminals/activity.jsonl > ~/.claude/terminals/activity.tmp && mv ~/.claude/terminals/activity.tmp ~/.claude/terminals/activity.jsonl
+
+# Emit team hook events (TeammateIdle scan) based on session liveness.
+python3 ~/.claude/scripts/team_runtime.py hook heartbeat --session-id "$SID8" >/dev/null 2>&1 || true
 
 exit 0

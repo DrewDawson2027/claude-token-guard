@@ -8,11 +8,21 @@ All tests use isolated temp directories so they never touch real session state.
 import json
 import os
 import subprocess
+import sys
 import time
 
 import pytest
 
+# Add hooks dir to path so we can import normalize helpers
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from guard_normalize import normalize_session_key
+
 SCRIPT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "token-guard.py")
+
+
+def sk(session_id: str) -> str:
+    """Compute the normalized session_key for a given session_id (mirrors runtime behavior)."""
+    return normalize_session_key(session_id)
 
 
 @pytest.fixture
@@ -234,6 +244,10 @@ class TestAuditLog:
         last = json.loads(lines[-1])
         assert last["event"] == "allow"
         assert last["type"] == "Explore"
+        assert last["schema_version"] == 2
+        assert last["record_type"] == "audit_decision"
+        assert "session_key" in last
+        assert "decision_id" in last
 
     def test_audit_log_block(self, isolated_env):
         """Blocked spawns should create an audit entry with reason."""
@@ -251,6 +265,19 @@ class TestAuditLog:
         last = json.loads(lines[-1])
         assert last["event"] == "block"
         assert "reason" in last
+
+    def test_audit_session_is_sanitized(self, isolated_env):
+        """Path-like session IDs should not be persisted verbatim in audit fields."""
+        env, state_dir, _ = isolated_env
+        audit_file = state_dir / "audit.jsonl"
+
+        run_guard(make_task_input("builder", session_id="../../bad-ta"), env=env)
+
+        last = json.loads(audit_file.read_text().strip().split("\n")[-1])
+        assert "/" not in last["session"]
+        assert ".." not in last["session"]
+        assert "/" not in last["session_key"]
+        assert ".." not in last["session_key"]
 
 
 class TestExtractTargetDirs:
@@ -626,8 +653,8 @@ class TestBlockedAttempts:
         # Cause a block: spawn Explore twice
         run_guard(make_task_input("Explore", description="first", session_id=sid), env=env)
         run_guard(make_task_input("Explore", description="second attempt", session_id=sid), env=env)
-        # Check state file
-        with open(state_dir / f"{sid}.json", "r") as f:
+        # Check state file (uses normalized session_key for filename)
+        with open(state_dir / f"{sk(sid)}.json", "r") as f:
             state = json.load(f)
         assert "blocked_attempts" in state
         assert len(state["blocked_attempts"]) >= 1
@@ -639,8 +666,8 @@ class TestBlockedAttempts:
         env, state_dir, _ = isolated_env
         sid = "blocked-prune"
 
-        # Create state with an old blocked attempt
-        state_file = state_dir / f"{sid}.json"
+        # Create state with an old blocked attempt (use normalized key for filename)
+        state_file = state_dir / f"{sk(sid)}.json"
         now = time.time()
         state = {
             "agent_count": 1,
@@ -746,6 +773,97 @@ class TestReportMode:
         assert "Necessity patterns triggered" in result.stdout
         assert "search_grep" in result.stdout
 
+    def test_report_mixed_v1_v2_entries(self, isolated_env):
+        """--report should count both v1 (no schema_version) and v2 entries."""
+        env, state_dir, _ = isolated_env
+        audit_file = state_dir / "audit.jsonl"
+        entries = [
+            # v1-style entries (no schema_version, no record_type)
+            {"ts": "2026-01-01T00:00:00", "event": "allow", "type": "Explore", "desc": "v1 task", "session": "v1s"},
+            {"ts": "2026-01-01T00:00:01", "event": "block", "type": "Explore", "desc": "v1 block", "session": "v1s", "reason": "one_per_session limit"},
+            # v2-style entries (with schema_version, record_type, session_key)
+            {"ts": "2026-01-02T00:00:00", "event": "allow", "type": "general-purpose", "desc": "v2 task",
+             "session": "v2s", "schema_version": 2, "record_type": "audit_decision", "session_key": "abc123def456"},
+            {"ts": "2026-01-02T00:00:01", "event": "block", "type": "general-purpose", "desc": "v2 block",
+             "session": "v2s", "schema_version": 2, "record_type": "audit_decision", "session_key": "abc123def456",
+             "reason": "max_per_type limit"},
+        ]
+        audit_file.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
+
+        result = subprocess.run(
+            ["python3", SCRIPT, "--report"],
+            capture_output=True, text=True, env=env, timeout=10,
+        )
+        assert result.returncode == 0
+        assert "Allowed: 2" in result.stdout  # Both v1 and v2 allow entries
+        assert "Blocked: 2" in result.stdout  # Both v1 and v2 block entries
+        assert "Schema versions seen" in result.stdout
+
+    def test_report_json_output(self, isolated_env):
+        """--report --json should produce valid JSON with expected keys."""
+        env, state_dir, _ = isolated_env
+        audit_file = state_dir / "audit.jsonl"
+        entries = [
+            {"ts": "2026-01-01T00:00:00", "event": "allow", "type": "Explore", "desc": "test", "session": "abc"},
+            {"ts": "2026-01-01T00:00:01", "event": "block", "type": "Explore", "desc": "second", "session": "abc", "reason": "one_per_session limit"},
+        ]
+        audit_file.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
+
+        result = subprocess.run(
+            ["python3", SCRIPT, "--report", "--json"],
+            capture_output=True, text=True, env=env, timeout=10,
+        )
+        assert result.returncode == 0
+        # Extract JSON from stdout (report text comes first, JSON at the end)
+        # Search backwards for the last valid JSON object
+        stdout = result.stdout
+        report_json = None
+        idx = len(stdout)
+        while idx > 0:
+            idx = stdout.rfind("{", 0, idx)
+            if idx < 0:
+                break
+            try:
+                report_json = json.loads(stdout[idx:])
+                break
+            except json.JSONDecodeError:
+                continue
+        assert report_json is not None, "No valid JSON object found in --json output"
+        assert "total_attempts" in report_json
+        assert "allowed" in report_json
+        assert "blocked" in report_json
+        assert "system_health" in report_json
+        assert report_json["total_attempts"] == 2
+
+    def test_report_large_log_bounded(self, isolated_env):
+        """--report on a 2000-line log should complete in under 5 seconds."""
+        env, state_dir, _ = isolated_env
+        audit_file = state_dir / "audit.jsonl"
+        lines = []
+        for i in range(2000):
+            event = "allow" if i % 3 != 0 else "block"
+            entry = {
+                "ts": f"2026-01-01T{i//3600:02d}:{(i%3600)//60:02d}:{i%60:02d}",
+                "event": event,
+                "type": f"type-{i % 10}",
+                "desc": f"task {i}",
+                "session": f"session-{i % 50}",
+            }
+            if event == "block":
+                entry["reason"] = "necessity_check"
+            lines.append(json.dumps(entry))
+        audit_file.write_text("\n".join(lines) + "\n")
+
+        start = time.time()
+        result = subprocess.run(
+            ["python3", SCRIPT, "--report"],
+            capture_output=True, text=True, env=env, timeout=10,
+        )
+        elapsed = time.time() - start
+        assert result.returncode == 0
+        assert elapsed < 5.0, f"Report on 2000-line log took {elapsed:.1f}s (budget: 5s)"
+        assert "TOKEN GUARD ANALYTICS" in result.stdout
+
 
 class TestSafeInt:
     """Test _safe_int edge cases for config coercion."""
@@ -831,7 +949,7 @@ class TestExtractTargetDirsNonstandard:
             prompt="GOAL: Map code\nSTART: /data/users/drew/project\nSTOP WHEN: done"
         ), env=env)
         assert code == 0
-        with open(state_dir / "dirs-nonstandard.json", "r") as f:
+        with open(state_dir / f"{sk('dirs-nonstandard')}.json", "r") as f:
             state = json.load(f)
         agents = state["agents"]
         assert len(agents) == 1
@@ -846,7 +964,7 @@ class TestExtractTargetDirsNonstandard:
             prompt="Map the architecture of /opt/app/src thoroughly"
         ), env=env)
         assert code == 0
-        with open(state_dir / "dirs-multi.json", "r") as f:
+        with open(state_dir / f"{sk('dirs-multi')}.json", "r") as f:
             state = json.load(f)
         agents = state["agents"]
         assert len(agents) == 1
@@ -913,3 +1031,123 @@ class TestFuzzyNecessity:
         last = json.loads(lines[-1])
         assert last["event"] == "block"
         assert last.get("pattern", "").startswith("fuzzy_")
+
+
+class TestUsageMode:
+    """Test the --usage shareable summary mode."""
+
+    def test_usage_mode(self, isolated_env):
+        """--usage should print shareable summary without crashing."""
+        env, state_dir, _ = isolated_env
+        audit_file = state_dir / "audit.jsonl"
+        entries = [
+            {"ts": "2026-01-01T00:00:00", "event": "allow", "type": "Explore", "desc": "test", "session": "abc"},
+            {"ts": "2026-01-01T00:00:01", "event": "block", "type": "Explore", "desc": "second", "session": "abc", "reason": "one_per_session limit"},
+        ]
+        audit_file.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
+
+        result = subprocess.run(
+            ["python3", SCRIPT, "--usage"],
+            capture_output=True, text=True, env=env, timeout=10,
+        )
+        assert result.returncode == 0
+        assert "YOUR TOKEN GUARD USAGE" in result.stdout
+        assert "Agents blocked: 1" in result.stdout
+
+    def test_usage_no_data(self, isolated_env):
+        """--usage with no audit data should not crash."""
+        env, _, _ = isolated_env
+        result = subprocess.run(
+            ["python3", SCRIPT, "--usage"],
+            capture_output=True, text=True, env=env, timeout=10,
+        )
+        assert result.returncode == 0
+
+
+class TestStrictMode:
+    """Test fail_closed strict mode behavior."""
+
+    def test_strict_mode_blocks_on_state_dir_failure(self, tmp_path):
+        """fail_closed should exit 2 when state dir is unwritable."""
+        state_dir = tmp_path / "strict-state"
+        state_dir.mkdir()
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "max_agents": 5, "parallel_window_seconds": 30,
+            "global_cooldown_seconds": 0, "max_per_subagent_type": 1,
+            "failure_mode": "fail_closed",
+        }))
+        env = os.environ.copy()
+        env["TOKEN_GUARD_STATE_DIR"] = str(state_dir)
+        env["TOKEN_GUARD_CONFIG_PATH"] = str(config_path)
+
+        # Make state dir read-only so lock file creation fails
+        os.chmod(str(state_dir), 0o555)
+        try:
+            code, _, stderr = run_guard(
+                make_task_input("Explore", session_id="strict-test"), env=env
+            )
+            assert code == 2, f"Expected strict block (exit 2), got exit {code}"
+            assert "strict mode" in stderr.lower()
+        finally:
+            os.chmod(str(state_dir), 0o755)
+
+    def test_strict_mode_allows_when_healthy(self, tmp_path):
+        """fail_closed should exit 0 when state dir is healthy."""
+        state_dir = tmp_path / "strict-healthy"
+        state_dir.mkdir()
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "max_agents": 5, "parallel_window_seconds": 30,
+            "global_cooldown_seconds": 0, "max_per_subagent_type": 1,
+            "failure_mode": "fail_closed",
+        }))
+        env = os.environ.copy()
+        env["TOKEN_GUARD_STATE_DIR"] = str(state_dir)
+        env["TOKEN_GUARD_CONFIG_PATH"] = str(config_path)
+
+        code, _, _ = run_guard(
+            make_task_input("Explore", session_id="strict-healthy"), env=env
+        )
+        assert code == 0
+
+    def test_malformed_stdin_always_fails_open_even_strict(self, tmp_path):
+        """Malformed stdin should exit 0 even in fail_closed mode (can't enforce without input)."""
+        state_dir = tmp_path / "strict-stdin"
+        state_dir.mkdir()
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "max_agents": 5, "parallel_window_seconds": 30,
+            "global_cooldown_seconds": 0, "max_per_subagent_type": 1,
+            "failure_mode": "fail_closed",
+        }))
+        env = os.environ.copy()
+        env["TOKEN_GUARD_STATE_DIR"] = str(state_dir)
+        env["TOKEN_GUARD_CONFIG_PATH"] = str(config_path)
+
+        # Garbage stdin — even in strict mode, stdin parse errors fail-open
+        code, _, _ = run_guard_raw("not json at all {{{", env=env)
+        assert code == 0, f"Expected fail-open (exit 0) for malformed stdin even in strict mode, got exit {code}"
+
+    def test_fail_open_allows_on_state_dir_failure(self, tmp_path):
+        """fail_open should exit 0 even when state dir is unwritable."""
+        state_dir = tmp_path / "open-state"
+        state_dir.mkdir()
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "max_agents": 5, "parallel_window_seconds": 30,
+            "global_cooldown_seconds": 0, "max_per_subagent_type": 1,
+            "failure_mode": "fail_open",
+        }))
+        env = os.environ.copy()
+        env["TOKEN_GUARD_STATE_DIR"] = str(state_dir)
+        env["TOKEN_GUARD_CONFIG_PATH"] = str(config_path)
+
+        os.chmod(str(state_dir), 0o555)
+        try:
+            code, _, _ = run_guard(
+                make_task_input("Explore", session_id="open-test"), env=env
+            )
+            assert code == 0, f"Expected fail-open (exit 0), got exit {code}"
+        finally:
+            os.chmod(str(state_dir), 0o755)
