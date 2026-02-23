@@ -601,9 +601,11 @@ def extract_target_dirs(prompt: str) -> List[str]:
     """
     dirs = []
     patterns = [
-        r'(?:START:\s*)(~?/[^\s\n,]+)',            # START: /any/path
-        r'(?:^|\s)(~/[^\s\n,]+)',                   # Any ~/ path
-        r'(?:^|\s)(/[^\s\n,]+/[^\s\n,]+)',         # Any /foo/bar multi-segment absolute path
+        r'(?:START:\s*)(~?/[^\s\n,]+)',                # START: /any/path or START: ~/path
+        r'(?:START:\s*)([A-Za-z]:[\\\/][^\s\n,]*)',    # START: C:\path or C:/path (Windows)
+        r'(?:^|\s)(~/[^\s\n,]+)',                       # Any ~/ path
+        r'(?:^|\s)(/[^\s\n,]+/[^\s\n,]+)',             # Any /foo/bar multi-segment absolute path
+        r'(?:^|\s)([A-Za-z]:[\\\/][^\s\n,]+)',         # Any C:\path or C:/path (Windows)
     ]
     for pattern in patterns:
         for match in re.finditer(pattern, prompt):

@@ -46,7 +46,7 @@ def load_json_state(path: str, default_factory: Optional[Callable[[], Dict]] = N
                          If None, returns an empty dict.
     """
     try:
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return default_factory() if default_factory else {}
@@ -86,10 +86,10 @@ def locked_append(path: str, line: str) -> bool:
     """
     lock_path = path + ".lock"
     try:
-        with open(lock_path, "w") as lf:
+        with open(lock_path, "w", encoding="utf-8") as lf:
             lock(lf)
             try:
-                with open(path, "a") as f:
+                with open(path, "a", encoding="utf-8") as f:
                     f.write(line)
                 return True
             finally:
@@ -106,7 +106,7 @@ def read_jsonl_fault_tolerant(path: str) -> List[Dict]:
     """
     entries = []
     try:
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line:

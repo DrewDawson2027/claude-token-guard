@@ -267,7 +267,7 @@ class TestLockedAppendProperties:
         try:
             success = hook_utils.locked_append(path, line_with_newline)
             if success:
-                with open(path, "r") as f:
+                with open(path, "r", encoding="utf-8") as f:
                     content = f.read()
                 assert line_with_newline in content
         finally:
