@@ -292,9 +292,9 @@ def phase_smoke_tests():
                 actions.append(f"read-efficiency-guard smoke test error: {type(e).__name__}")
                 repairs += 1
 
-        # Syntax check health-check.sh
+        # Syntax check health-check.sh (bash not applicable on Windows)
         hc_path = REQUIRED_HOOKS.get("health-check.sh", "")
-        if os.path.isfile(hc_path):
+        if sys.platform != "win32" and os.path.isfile(hc_path):
             checks += 1
             try:
                 result = subprocess.run(

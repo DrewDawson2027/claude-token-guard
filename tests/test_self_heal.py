@@ -7,6 +7,7 @@ Uses isolated temp directories so tests never touch real session state.
 import json
 import os
 import subprocess
+import sys
 import time
 
 import pytest
@@ -195,13 +196,17 @@ class TestSmokeTests:
         broken_hook.write_text("#!/usr/bin/env python3\nraise RuntimeError('broken')\n")
         broken_hook.chmod(0o755)
 
+        # Use json.dumps to safely escape the path for embedding in Python source
+        # (handles Windows backslashes that would otherwise be misinterpreted)
+        hooks_path_literal = json.dumps(str(fake_hooks_dir))
+
         # Run self-heal directly with the broken hook by patching the path
         # We test via subprocess that sends broken-hook path
         result = subprocess.run(
             ["python3", "-c", f"""
 import sys, os, json, subprocess, tempfile
 
-HOOKS_DIR = "{fake_hooks_dir}"
+HOOKS_DIR = {hooks_path_literal}
 STATE_DIR = os.environ["TOKEN_GUARD_STATE_DIR"]
 CONFIG_PATH = os.environ["TOKEN_GUARD_CONFIG_PATH"]
 
@@ -302,6 +307,7 @@ class TestAuditRotation:
 class TestAutoRepair:
     """Test auto-repair of hook permissions."""
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="Unix execute-bit permissions not applicable on Windows")
     def test_nonexecutable_sh_gets_fixed(self, isolated_env, tmp_path):
         """health-check.sh with 644 permissions should be fixed to 755 by self-heal.
 
